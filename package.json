@@ -1,0 +1,36 @@
+{
+  "name": "hedera-token-mint-on-tangem",
+  "version": "0.1.0",
+  "description": "iOS / Android app to mint Hedera Token Service (HTS) tokens with hardware signatures from a Tangem wallet card.",
+  "license": "MIT",
+  "private": false,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios --device",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --clean",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@expo-google-fonts/inter": "^0.2.3",
+    "@hashgraph/sdk": "^2.55.0",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "expo": "~52.0.0",
+    "expo-asset": "^55.0.16",
+    "expo-dev-client": "~5.0.0",
+    "expo-font": "~13.0.0",
+    "expo-status-bar": "~2.0.0",
+    "react": "18.3.1",
+    "react-native": "0.76.5",
+    "react-native-get-random-values": "~1.11.0",
+    "react-native-safe-area-context": "4.12.0",
+    "tangem-sdk-react-native": "^3.1.0",
+    "text-encoding-polyfill": "^0.6.7"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@types/react": "~18.3.12",
+    "typescript": "^5.6.0"
+  }
+}

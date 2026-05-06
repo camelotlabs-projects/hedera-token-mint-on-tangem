@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Hedera Token Mint",
+    "slug": "hedera-token-mint-on-tangem",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "ios": {
+      "bundleIdentifier": "app.hederatokenmint",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NFCReaderUsageDescription": "Tap your Tangem card to sign Hedera token-create transactions.",
+        "com.apple.developer.nfc.readersession.iso7816.select-identifiers": [
+          "A000000812010101"
+        ],
+        "com.apple.developer.nfc.readersession.formats": ["TAG"]
+      },
+      "entitlements": {
+        "com.apple.developer.nfc.readersession.formats": ["TAG"]
+      }
+    },
+    "android": {
+      "package": "app.hederatokenmint",
+      "permissions": ["android.permission.NFC"]
+    },
+    "plugins": ["expo-dev-client"]
+  }
+}

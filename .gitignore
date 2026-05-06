@@ -1,0 +1,13 @@
+node_modules/
+.expo/
+ios/
+android/
+dist/
+.DS_Store
+*.log
+*.pem
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.env
