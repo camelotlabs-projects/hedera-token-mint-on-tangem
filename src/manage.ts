@@ -12,6 +12,7 @@ import {
   Hbar,
   KeyList,
   NftId,
+  TokenAirdropTransaction,
   TokenBurnTransaction,
   TokenFreezeTransaction,
   TokenGrantKycTransaction,
@@ -45,6 +46,7 @@ export type ManageOp =
   | "mint"
   | "burn"
   | "transfer"
+  | "airdrop"
   | "update"
   | "freeze"
   | "unfreeze"
@@ -58,6 +60,7 @@ export const OP_LABELS: Record<ManageOp, string> = {
   mint: "Mint additional supply",
   burn: "Burn supply",
   transfer: "Transfer from treasury",
+  airdrop: "Airdrop (HIP-904)",
   update: "Update token",
   freeze: "Freeze account",
   unfreeze: "Unfreeze account",
@@ -278,4 +281,42 @@ export function buildTransfer(client: Client, p: TransferParams): TransferTransa
   }
 
   return baseTx(tx).freezeWith(client);
+}
+
+// ─── Airdrop (HIP-904) ───────────────────────────────────────────────
+
+/**
+ * HIP-904 TokenAirdrop. Same shape as a transfer, but the recipient does
+ * not need to associate the token first:
+ *
+ *   - If the recipient has open auto-association slots, the airdrop
+ *     completes immediately (token shows up in their wallet).
+ *   - If not, the airdrop becomes a pending claim that the recipient can
+ *     accept later via TokenClaimAirdrop. The sender (treasury) pays the
+ *     pending-airdrop rent until claimed or rejected.
+ *
+ * This is the right primitive for distributing to buyers, since the
+ * customer never has to issue an associate transaction from their own
+ * wallet.
+ */
+export type AirdropParams = TransferParams;
+
+export function buildAirdrop(client: Client, p: AirdropParams): TokenAirdropTransaction {
+  const tx = new TokenAirdropTransaction();
+  const tokenId = TokenId.fromString(p.tokenId);
+  const sender = ACCOUNTS.treasury;
+  const recipient = AccountId.fromString(p.recipientAccountId);
+
+  if (p.kind === "fungible") {
+    const amt = p.amountBaseUnits;
+    tx.addTokenTransfer(tokenId, sender, -amt);
+    tx.addTokenTransfer(tokenId, recipient, amt);
+  } else {
+    for (const serial of p.serials) {
+      tx.addNftTransfer(new NftId(tokenId, serial), sender, recipient);
+    }
+  }
+
+  // Airdrop fee is higher than transfer because of pending-airdrop bookkeeping.
+  return baseTx(tx, 30).freezeWith(client);
 }

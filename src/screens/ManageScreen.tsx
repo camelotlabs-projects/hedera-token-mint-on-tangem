@@ -4,6 +4,7 @@ import { HEDERA_DERIVATION_PATH, TANGEM_KEYS } from "../config";
 import { makeClient } from "../hedera";
 import { signForRole } from "../tangem";
 import {
+  buildAirdrop,
   buildBurn,
   buildFreeze,
   buildKycGrant,
@@ -184,8 +185,10 @@ export function ManageScreen({
           });
           break;
         }
-        case "transfer": {
+        case "transfer":
+        case "airdrop": {
           if (!accountId.trim()) throw new Error("Recipient account ID is required");
+          const builder = op === "airdrop" ? buildAirdrop : buildTransfer;
           if (tokenKind === "nft") {
             const serials = serialsInput
               .split(/[\s,]+/)
@@ -195,7 +198,7 @@ export function ManageScreen({
             if (serials.length === 0 || serials.some((n) => !Number.isFinite(n) || n <= 0)) {
               throw new Error("Provide one or more valid serial numbers");
             }
-            tx = buildTransfer(client, {
+            tx = builder(client, {
               kind: "nft",
               tokenId: id,
               recipientAccountId: accountId.trim(),
@@ -203,7 +206,7 @@ export function ManageScreen({
             });
           } else {
             if (!amount.trim()) throw new Error("Amount is required");
-            tx = buildTransfer(client, {
+            tx = builder(client, {
               kind: "fungible",
               tokenId: id,
               recipientAccountId: accountId.trim(),
@@ -243,6 +246,7 @@ export function ManageScreen({
     "mint",
     "burn",
     "transfer",
+    "airdrop",
     "update",
     "freeze",
     "unfreeze",
@@ -253,21 +257,28 @@ export function ManageScreen({
     "kycRevoke",
   ];
 
-  const hasKindToggle = op === "mint" || op === "burn" || op === "transfer";
+  const isSendOp = op === "transfer" || op === "airdrop";
+  const hasKindToggle = op === "mint" || op === "burn" || isSendOp;
   const ftAmount =
     (hasKindToggle && tokenKind === "fungible") || op === "wipe";
   const nftMint = op === "mint" && tokenKind === "nft";
-  const nftBurnOrTransfer = (op === "burn" || op === "transfer") && tokenKind === "nft";
+  const nftBurnOrTransfer = (op === "burn" || isSendOp) && tokenKind === "nft";
   const needsAccount =
     op === "freeze" ||
     op === "unfreeze" ||
     op === "wipe" ||
     op === "kycGrant" ||
     op === "kycRevoke" ||
-    op === "transfer";
+    isSendOp;
   const isUpdate = op === "update";
 
-  const accountFieldLabel = op === "transfer" ? "Recipient account" : "Target account";
+  const accountFieldLabel = isSendOp ? "Recipient account" : "Target account";
+  const accountFieldHint =
+    op === "transfer"
+      ? "Must have an associated slot for this token (auto-association or manual TokenAssociate)."
+      : op === "airdrop"
+        ? "No association needed. If recipient has free auto-assoc slots the token lands immediately; otherwise it sits as a pending claim until the recipient accepts it."
+        : undefined;
 
   return (
     <View>
@@ -319,7 +330,9 @@ export function ManageScreen({
                   ? "Amount to burn"
                   : op === "transfer"
                     ? "Amount to transfer"
-                    : "Amount to wipe"
+                    : op === "airdrop"
+                      ? "Amount to airdrop"
+                      : "Amount to wipe"
             }
             hint="Display units. Multiplied by 10^decimals."
             value={amount}
@@ -357,7 +370,7 @@ export function ManageScreen({
         {needsAccount && (
           <Input
             label={accountFieldLabel}
-            hint={op === "transfer" ? "Must have an associated slot for this token (auto-association or manual TokenAssociate)." : undefined}
+            hint={accountFieldHint}
             value={accountId}
             onChangeText={setAccountId}
             placeholder="0.0.X"
