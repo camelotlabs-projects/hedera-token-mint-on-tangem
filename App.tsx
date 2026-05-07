@@ -45,6 +45,7 @@ import {
   Section,
 } from "./src/components";
 import { palette, radius, spacing, type } from "./src/theme";
+import { ManageScreen } from "./src/screens/ManageScreen";
 
 type LogEntry = { ts: string; level: "info" | "ok" | "err"; msg: string };
 
@@ -77,6 +78,7 @@ export default function App() {
     Inter_700Bold,
   });
 
+  const [mode, setMode] = useState<"create" | "manage">("create");
   const [operatorKey, setOperatorKey] = useState("");
   const [treasuryScanned, setTreasuryScanned] = useState(false);
   const [feeCollectorScanned, setFeeCollectorScanned] = useState(false);
@@ -295,6 +297,21 @@ export default function App() {
           />
         </Section>
 
+        <View style={styles.modeRow}>
+          <Radio label="Create new token" selected={mode === "create"} onPress={() => setMode("create")} />
+          <Radio label="Manage existing" selected={mode === "manage"} onPress={() => setMode("manage")} />
+        </View>
+
+        {mode === "manage" ? (
+          <ManageScreen
+            operatorKey={operatorKey}
+            treasuryScanned={treasuryScanned}
+            busy={busy}
+            setBusy={setBusy}
+            appendLog={append}
+          />
+        ) : (
+        <>
         <Section
           step={2}
           title="Token specification"
@@ -546,6 +563,8 @@ export default function App() {
             </>
           )}
         </Section>
+        </>
+        )}
 
         {error && <Banner variant="error" title="Error" message={error} />}
 
@@ -620,6 +639,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
+  },
+  modeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: spacing.lg,
+    marginBottom: 0,
   },
   fractionRow: {
     flexDirection: "row",
