@@ -11,6 +11,7 @@ import {
   AccountId,
   Hbar,
   KeyList,
+  NftId,
   TokenBurnTransaction,
   TokenFreezeTransaction,
   TokenGrantKycTransaction,
@@ -23,6 +24,7 @@ import {
   TokenUpdateTransaction,
   TokenWipeTransaction,
   TransactionId,
+  TransferTransaction,
   type Client,
 } from "@hashgraph/sdk";
 import { ACCOUNTS } from "./config";
@@ -42,6 +44,7 @@ const baseTx = <T extends { setTransactionId: any; setNodeAccountIds: any; setMa
 export type ManageOp =
   | "mint"
   | "burn"
+  | "transfer"
   | "update"
   | "freeze"
   | "unfreeze"
@@ -54,6 +57,7 @@ export type ManageOp =
 export const OP_LABELS: Record<ManageOp, string> = {
   mint: "Mint additional supply",
   burn: "Burn supply",
+  transfer: "Transfer from treasury",
   update: "Update token",
   freeze: "Freeze account",
   unfreeze: "Unfreeze account",
@@ -231,4 +235,47 @@ export function buildKycRevoke(client: Client, p: KycParams): TokenRevokeKycTran
       .setTokenId(TokenId.fromString(p.tokenId))
       .setAccountId(AccountId.fromString(p.accountId)),
   ).freezeWith(client);
+}
+
+// ─── Transfer (treasury → recipient) ─────────────────────────────────
+
+/**
+ * Build a transfer from the configured treasury account to a recipient.
+ * Treasury is the sender; the Tangem treasury key signs.
+ *
+ * For NFT: pass `serials`. Each serial moves once.
+ * For FT:  pass `amountBaseUnits`. The recipient must have an open
+ *          association slot (auto-association or explicit TokenAssociate).
+ */
+export type TransferParams =
+  | {
+      kind: "fungible";
+      tokenId: string;
+      recipientAccountId: string;
+      amountBaseUnits: bigint;
+    }
+  | {
+      kind: "nft";
+      tokenId: string;
+      recipientAccountId: string;
+      serials: number[];
+    };
+
+export function buildTransfer(client: Client, p: TransferParams): TransferTransaction {
+  const tx = new TransferTransaction();
+  const tokenId = TokenId.fromString(p.tokenId);
+  const sender = ACCOUNTS.treasury;
+  const recipient = AccountId.fromString(p.recipientAccountId);
+
+  if (p.kind === "fungible") {
+    const amt = p.amountBaseUnits;
+    tx.addTokenTransfer(tokenId, sender, -amt);
+    tx.addTokenTransfer(tokenId, recipient, amt);
+  } else {
+    for (const serial of p.serials) {
+      tx.addNftTransfer(new NftId(tokenId, serial), sender, recipient);
+    }
+  }
+
+  return baseTx(tx).freezeWith(client);
 }

@@ -10,6 +10,7 @@ import {
   buildKycRevoke,
   buildMint,
   buildPause,
+  buildTransfer,
   buildUnfreeze,
   buildUnpause,
   buildUpdate,
@@ -183,6 +184,34 @@ export function ManageScreen({
           });
           break;
         }
+        case "transfer": {
+          if (!accountId.trim()) throw new Error("Recipient account ID is required");
+          if (tokenKind === "nft") {
+            const serials = serialsInput
+              .split(/[\s,]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((s) => parseInt(s, 10));
+            if (serials.length === 0 || serials.some((n) => !Number.isFinite(n) || n <= 0)) {
+              throw new Error("Provide one or more valid serial numbers");
+            }
+            tx = buildTransfer(client, {
+              kind: "nft",
+              tokenId: id,
+              recipientAccountId: accountId.trim(),
+              serials,
+            });
+          } else {
+            if (!amount.trim()) throw new Error("Amount is required");
+            tx = buildTransfer(client, {
+              kind: "fungible",
+              tokenId: id,
+              recipientAccountId: accountId.trim(),
+              amountBaseUnits: toBaseUnits(amount, dec),
+            });
+          }
+          break;
+        }
       }
 
       appendLog("info", `${OP_LABELS[op]} → ${id}`);
@@ -213,6 +242,7 @@ export function ManageScreen({
   const ops: ManageOp[] = [
     "mint",
     "burn",
+    "transfer",
     "update",
     "freeze",
     "unfreeze",
@@ -223,18 +253,21 @@ export function ManageScreen({
     "kycRevoke",
   ];
 
-  const isMintOrBurn = op === "mint" || op === "burn";
+  const hasKindToggle = op === "mint" || op === "burn" || op === "transfer";
   const ftAmount =
-    (isMintOrBurn && tokenKind === "fungible") || op === "wipe";
+    (hasKindToggle && tokenKind === "fungible") || op === "wipe";
   const nftMint = op === "mint" && tokenKind === "nft";
-  const nftBurn = op === "burn" && tokenKind === "nft";
+  const nftBurnOrTransfer = (op === "burn" || op === "transfer") && tokenKind === "nft";
   const needsAccount =
     op === "freeze" ||
     op === "unfreeze" ||
     op === "wipe" ||
     op === "kycGrant" ||
-    op === "kycRevoke";
+    op === "kycRevoke" ||
+    op === "transfer";
   const isUpdate = op === "update";
+
+  const accountFieldLabel = op === "transfer" ? "Recipient account" : "Target account";
 
   return (
     <View>
@@ -267,7 +300,7 @@ export function ManageScreen({
           ))}
         </View>
 
-        {isMintOrBurn && (
+        {hasKindToggle && (
           <View style={{ marginBottom: spacing.md }}>
             <Text style={styles.fieldLabel}>Token kind</Text>
             <View style={styles.row}>
@@ -279,7 +312,15 @@ export function ManageScreen({
 
         {ftAmount && (
           <Input
-            label={op === "mint" ? "Amount to mint" : op === "burn" ? "Amount to burn" : "Amount to wipe"}
+            label={
+              op === "mint"
+                ? "Amount to mint"
+                : op === "burn"
+                  ? "Amount to burn"
+                  : op === "transfer"
+                    ? "Amount to transfer"
+                    : "Amount to wipe"
+            }
             hint="Display units. Multiplied by 10^decimals."
             value={amount}
             onChangeText={setAmount}
@@ -301,7 +342,7 @@ export function ManageScreen({
           />
         )}
 
-        {nftBurn && (
+        {nftBurnOrTransfer && (
           <Input
             label="Serial numbers"
             hint="Comma- or space-separated, e.g. 1,2,7"
@@ -315,7 +356,8 @@ export function ManageScreen({
 
         {needsAccount && (
           <Input
-            label="Target account"
+            label={accountFieldLabel}
+            hint={op === "transfer" ? "Must have an associated slot for this token (auto-association or manual TokenAssociate)." : undefined}
             value={accountId}
             onChangeText={setAccountId}
             placeholder="0.0.X"
