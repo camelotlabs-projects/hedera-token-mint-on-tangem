@@ -10,6 +10,7 @@
 import {
   AccountId,
   Hbar,
+  KeyList,
   TokenBurnTransaction,
   TokenFreezeTransaction,
   TokenGrantKycTransaction,
@@ -98,12 +99,31 @@ export function buildBurn(client: Client, p: BurnParams): TokenBurnTransaction {
 
 // ─── Update ──────────────────────────────────────────────────────────
 
+/**
+ * Roles that can be safely removed via TokenUpdate. Removing a role is
+ * permanent — Hedera does not allow re-adding the key once cleared. Admin
+ * and supply are deliberately excluded; removing admin freezes governance,
+ * and removing supply blocks future mint/burn forever.
+ */
+export type RemovableKey = "kyc" | "wipe" | "freeze" | "feeSchedule" | "pause" | "metadata";
+
+export const REMOVABLE_KEY_LABELS: Record<RemovableKey, string> = {
+  kyc: "KYC",
+  wipe: "Wipe",
+  freeze: "Freeze",
+  feeSchedule: "Fee schedule",
+  pause: "Pause",
+  metadata: "Metadata",
+};
+
 export interface UpdateParams {
   tokenId: string;
   name?: string;
   symbol?: string;
   memo?: string;
   autoRenewPeriodSeconds?: number;
+  /** Roles to permanently remove. Each becomes an empty KeyList in the tx. */
+  removeKeys?: RemovableKey[];
 }
 export function buildUpdate(client: Client, p: UpdateParams): TokenUpdateTransaction {
   const tx = new TokenUpdateTransaction().setTokenId(TokenId.fromString(p.tokenId));
@@ -113,6 +133,19 @@ export function buildUpdate(client: Client, p: UpdateParams): TokenUpdateTransac
   if (p.autoRenewPeriodSeconds && p.autoRenewPeriodSeconds > 0) {
     tx.setAutoRenewPeriod(p.autoRenewPeriodSeconds);
   }
+
+  const empty = new KeyList(); // sentinel for "remove this key permanently"
+  for (const role of p.removeKeys ?? []) {
+    switch (role) {
+      case "kyc": tx.setKycKey(empty); break;
+      case "wipe": tx.setWipeKey(empty); break;
+      case "freeze": tx.setFreezeKey(empty); break;
+      case "feeSchedule": tx.setFeeScheduleKey(empty); break;
+      case "pause": tx.setPauseKey(empty); break;
+      case "metadata": tx.setMetadataKey(empty); break;
+    }
+  }
+
   return baseTx(tx, 30).freezeWith(client);
 }
 

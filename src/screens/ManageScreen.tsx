@@ -17,8 +17,10 @@ import {
   toBaseUnits,
   type ManageOp,
   OP_LABELS,
+  type RemovableKey,
+  REMOVABLE_KEY_LABELS,
 } from "../manage";
-import { Banner, Input, KV, PrimaryButton, Radio, Section } from "../components";
+import { Banner, Checkbox, Input, KV, PrimaryButton, Radio, Section } from "../components";
 import { palette, spacing, type } from "../theme";
 
 type LogEntry = { ts: string; level: "info" | "ok" | "err"; msg: string };
@@ -51,6 +53,16 @@ export function ManageScreen({
   const [updateName, setUpdateName] = useState("");
   const [updateSymbol, setUpdateSymbol] = useState("");
   const [updateMemo, setUpdateMemo] = useState("");
+  const [removeKeys, setRemoveKeys] = useState<Record<RemovableKey, boolean>>({
+    kyc: false,
+    wipe: false,
+    freeze: false,
+    feeSchedule: false,
+    pause: false,
+    metadata: false,
+  });
+  const toggleRemove = (k: RemovableKey) =>
+    setRemoveKeys((s) => ({ ...s, [k]: !s[k] }));
 
   const targetReady = tokenId.trim().length > 0 && operatorKey.trim().length > 0 && treasuryScanned;
 
@@ -85,14 +97,21 @@ export function ManageScreen({
           break;
         }
         case "update": {
-          if (!updateName.trim() && !updateSymbol.trim() && !updateMemo.trim()) {
-            throw new Error("Provide at least one field to update");
+          const removeList = (Object.keys(removeKeys) as RemovableKey[]).filter((k) => removeKeys[k]);
+          if (
+            !updateName.trim() &&
+            !updateSymbol.trim() &&
+            !updateMemo.trim() &&
+            removeList.length === 0
+          ) {
+            throw new Error("Provide at least one field to update or a key to remove");
           }
           tx = buildUpdate(client, {
             tokenId: id,
             name: updateName,
             symbol: updateSymbol,
             memo: updateMemo,
+            removeKeys: removeList,
           });
           break;
         }
@@ -236,6 +255,23 @@ export function ManageScreen({
             <Input label="New name" value={updateName} onChangeText={setUpdateName} placeholder="(unchanged if empty)" />
             <Input label="New symbol" value={updateSymbol} onChangeText={setUpdateSymbol} placeholder="(unchanged if empty)" autoCapitalize="characters" />
             <Input label="Memo" value={updateMemo} onChangeText={setUpdateMemo} placeholder="(unchanged if empty)" />
+
+            <View style={styles.removeBlock}>
+              <Banner
+                variant="warning"
+                title="Remove keys (permanent)"
+                message="Checking a key clears it on-chain. Once removed, that role can never be re-added — the operation becomes impossible forever. Admin and supply are excluded as a guard rail."
+              />
+              <View style={{ height: spacing.sm }} />
+              {(Object.keys(REMOVABLE_KEY_LABELS) as RemovableKey[]).map((k) => (
+                <Checkbox
+                  key={k}
+                  label={`Remove ${REMOVABLE_KEY_LABELS[k]} key`}
+                  checked={removeKeys[k]}
+                  onPress={() => toggleRemove(k)}
+                />
+              ))}
+            </View>
           </>
         )}
       </Section>
@@ -262,5 +298,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     marginBottom: spacing.md,
+  },
+  removeBlock: {
+    marginTop: spacing.lg,
   },
 });
