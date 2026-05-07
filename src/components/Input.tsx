@@ -13,6 +13,7 @@ interface Props {
   autoCorrect?: boolean;
   secure?: boolean;
   mono?: boolean;
+  multiline?: boolean;
 }
 
 export function Input({
@@ -26,13 +27,19 @@ export function Input({
   autoCorrect = false,
   secure,
   mono,
+  multiline,
 }: Props) {
   const [focused, setFocused] = useState(false);
   return (
     <View style={styles.wrap}>
       {label && <Text style={styles.label}>{label}</Text>}
       <TextInput
-        style={[styles.input, mono && styles.mono, focused && styles.focused]}
+        style={[
+          styles.input,
+          mono && styles.mono,
+          multiline && styles.multiline,
+          focused && styles.focused,
+        ]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -41,6 +48,8 @@ export function Input({
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
         secureTextEntry={secure}
+        multiline={multiline}
+        textAlignVertical={multiline ? "top" : "auto"}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       />
@@ -70,6 +79,10 @@ const styles = StyleSheet.create({
   },
   mono: {
     ...type.mono,
+  },
+  multiline: {
+    minHeight: 100,
+    paddingTop: 12,
   },
   focused: {
     borderColor: palette.accent,

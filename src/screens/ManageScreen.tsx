@@ -14,6 +14,7 @@ import {
   buildUnpause,
   buildUpdate,
   buildWipe,
+  metadataFromString,
   toBaseUnits,
   type ManageOp,
   OP_LABELS,
@@ -48,8 +49,11 @@ export function ManageScreen({
   const [lastStatus, setLastStatus] = useState<string | null>(null);
 
   // Op-specific fields
+  const [tokenKind, setTokenKind] = useState<"fungible" | "nft">("fungible");
   const [amount, setAmount] = useState("");
   const [accountId, setAccountId] = useState("");
+  const [metadataLines, setMetadataLines] = useState("");
+  const [serialsInput, setSerialsInput] = useState("");
   const [updateName, setUpdateName] = useState("");
   const [updateSymbol, setUpdateSymbol] = useState("");
   const [updateMemo, setUpdateMemo] = useState("");
@@ -87,13 +91,44 @@ export function ManageScreen({
 
       switch (op) {
         case "mint": {
-          if (!amount.trim()) throw new Error("Amount is required");
-          tx = buildMint(client, { tokenId: id, amountBaseUnits: toBaseUnits(amount, dec) });
+          if (tokenKind === "nft") {
+            const lines = metadataLines.split("\n").map((s) => s.trim()).filter(Boolean);
+            if (lines.length === 0) throw new Error("Provide at least one metadata URI/CID (one per line)");
+            if (lines.length > 10) throw new Error("Max 10 NFT serials per mint transaction");
+            tx = buildMint(client, {
+              kind: "nft",
+              tokenId: id,
+              metadata: lines.map(metadataFromString),
+            });
+          } else {
+            if (!amount.trim()) throw new Error("Amount is required");
+            tx = buildMint(client, {
+              kind: "fungible",
+              tokenId: id,
+              amountBaseUnits: toBaseUnits(amount, dec),
+            });
+          }
           break;
         }
         case "burn": {
-          if (!amount.trim()) throw new Error("Amount is required");
-          tx = buildBurn(client, { tokenId: id, amountBaseUnits: toBaseUnits(amount, dec) });
+          if (tokenKind === "nft") {
+            const serials = serialsInput
+              .split(/[\s,]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((s) => parseInt(s, 10));
+            if (serials.length === 0 || serials.some((n) => !Number.isFinite(n) || n <= 0)) {
+              throw new Error("Provide one or more valid serial numbers");
+            }
+            tx = buildBurn(client, { kind: "nft", tokenId: id, serials });
+          } else {
+            if (!amount.trim()) throw new Error("Amount is required");
+            tx = buildBurn(client, {
+              kind: "fungible",
+              tokenId: id,
+              amountBaseUnits: toBaseUnits(amount, dec),
+            });
+          }
           break;
         }
         case "update": {
@@ -188,7 +223,11 @@ export function ManageScreen({
     "kycRevoke",
   ];
 
-  const needsAmount = op === "mint" || op === "burn" || op === "wipe";
+  const isMintOrBurn = op === "mint" || op === "burn";
+  const ftAmount =
+    (isMintOrBurn && tokenKind === "fungible") || op === "wipe";
+  const nftMint = op === "mint" && tokenKind === "nft";
+  const nftBurn = op === "burn" && tokenKind === "nft";
   const needsAccount =
     op === "freeze" ||
     op === "unfreeze" ||
@@ -209,7 +248,7 @@ export function ManageScreen({
           autoCapitalize="none"
           mono
         />
-        {(needsAmount || isUpdate) && (
+        {(ftAmount || isUpdate) && (
           <Input
             label="Decimals"
             hint="Used to convert amount to base units. Match the token."
@@ -228,7 +267,17 @@ export function ManageScreen({
           ))}
         </View>
 
-        {needsAmount && (
+        {isMintOrBurn && (
+          <View style={{ marginBottom: spacing.md }}>
+            <Text style={styles.fieldLabel}>Token kind</Text>
+            <View style={styles.row}>
+              <Radio label="Fungible" selected={tokenKind === "fungible"} onPress={() => setTokenKind("fungible")} />
+              <Radio label="NFT" selected={tokenKind === "nft"} onPress={() => setTokenKind("nft")} />
+            </View>
+          </View>
+        )}
+
+        {ftAmount && (
           <Input
             label={op === "mint" ? "Amount to mint" : op === "burn" ? "Amount to burn" : "Amount to wipe"}
             hint="Display units. Multiplied by 10^decimals."
@@ -236,6 +285,31 @@ export function ManageScreen({
             onChangeText={setAmount}
             placeholder="1000"
             keyboardType="number-pad"
+          />
+        )}
+
+        {nftMint && (
+          <Input
+            label="Metadata (one URI per line)"
+            hint="Each line creates a new serial. Recommended: ipfs://<CID> pointing to HIP-412 metadata JSON. Max 100 bytes per line, max 10 serials per tx."
+            value={metadataLines}
+            onChangeText={setMetadataLines}
+            placeholder="ipfs://bafkreih..."
+            multiline
+            mono
+            autoCapitalize="none"
+          />
+        )}
+
+        {nftBurn && (
+          <Input
+            label="Serial numbers"
+            hint="Comma- or space-separated, e.g. 1,2,7"
+            value={serialsInput}
+            onChangeText={setSerialsInput}
+            placeholder="1, 2, 7"
+            keyboardType="numbers-and-punctuation"
+            mono
           />
         )}
 
@@ -301,5 +375,14 @@ const styles = StyleSheet.create({
   },
   removeBlock: {
     marginTop: spacing.lg,
+  },
+  row: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  fieldLabel: {
+    ...type.eyebrow,
+    color: palette.textSecondary,
+    marginBottom: spacing.sm,
   },
 });

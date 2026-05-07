@@ -73,28 +73,42 @@ export function toBaseUnits(display: string, decimals: number): bigint {
 
 // ─── Mint / Burn ─────────────────────────────────────────────────────
 
-export interface MintParams {
-  tokenId: string;
-  amountBaseUnits: bigint;
-}
+export type MintParams =
+  | { kind: "fungible"; tokenId: string; amountBaseUnits: bigint }
+  | { kind: "nft"; tokenId: string; metadata: Uint8Array[] };
+
 export function buildMint(client: Client, p: MintParams): TokenMintTransaction {
-  return baseTx(
-    new TokenMintTransaction()
-      .setTokenId(TokenId.fromString(p.tokenId))
-      .setAmount(p.amountBaseUnits),
-  ).freezeWith(client);
+  const tx = new TokenMintTransaction().setTokenId(TokenId.fromString(p.tokenId));
+  if (p.kind === "fungible") {
+    tx.setAmount(p.amountBaseUnits);
+  } else {
+    tx.setMetadata(p.metadata);
+  }
+  // NFT mints can hit the 1HBAR floor per serial; allow up to 20 serials per call.
+  return baseTx(tx, p.kind === "nft" ? 30 : 5).freezeWith(client);
 }
 
-export interface BurnParams {
-  tokenId: string;
-  amountBaseUnits: bigint;
-}
+export type BurnParams =
+  | { kind: "fungible"; tokenId: string; amountBaseUnits: bigint }
+  | { kind: "nft"; tokenId: string; serials: number[] };
+
 export function buildBurn(client: Client, p: BurnParams): TokenBurnTransaction {
-  return baseTx(
-    new TokenBurnTransaction()
-      .setTokenId(TokenId.fromString(p.tokenId))
-      .setAmount(p.amountBaseUnits),
-  ).freezeWith(client);
+  const tx = new TokenBurnTransaction().setTokenId(TokenId.fromString(p.tokenId));
+  if (p.kind === "fungible") {
+    tx.setAmount(p.amountBaseUnits);
+  } else {
+    tx.setSerials(p.serials as any);
+  }
+  return baseTx(tx).freezeWith(client);
+}
+
+/** Encode a metadata URI string to UTF-8 bytes (max 100 per Hedera). */
+export function metadataFromString(s: string): Uint8Array {
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length > 100) {
+    throw new Error(`Metadata too long: ${bytes.length} bytes (max 100). Use a URI/CID instead of raw JSON.`);
+  }
+  return bytes;
 }
 
 // ─── Update ──────────────────────────────────────────────────────────
