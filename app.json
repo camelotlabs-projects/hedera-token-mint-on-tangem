@@ -12,7 +12,9 @@
       "infoPlist": {
         "NFCReaderUsageDescription": "Tap your Tangem card to sign Hedera token-create transactions.",
         "com.apple.developer.nfc.readersession.iso7816.select-identifiers": [
-          "A000000812010101"
+          "A000000812010101",
+          "A000000812010208",
+          "D2760000850101"
         ],
         "com.apple.developer.nfc.readersession.formats": ["TAG"]
       },
