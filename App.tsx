@@ -208,6 +208,29 @@ export default function App() {
         signForRole("treasury", HEDERA_DERIVATION_PATH, bytes),
       );
 
+      // If the token has a custom fee that routes to a separate fee collector
+      // account (different from the treasury), Hedera consensus requires that
+      // collector account-key to also sign the TokenCreate. Skipping this
+      // produces INVALID_SIGNATURE — even when allCollectorsAreExempt is true,
+      // because the exemption only covers fee payment, not collector-role
+      // authorisation.
+      const feeCollectorMustSign =
+        form.fee &&
+        form.fee.type !== "none" &&
+        form.fee.collectorAccountId &&
+        form.fee.collectorAccountId !== ACCOUNTS.treasury.toString();
+      if (feeCollectorMustSign) {
+        if (!feeCollectorScanned) {
+          throw new Error(
+            "Custom fee uses a separate fee collector — scan the fee collector card first (Auto-association section).",
+          );
+        }
+        append("info", "Tap FEE COLLECTOR card to authorise fee collector role");
+        await tx.signWith(TANGEM_KEYS.feeCollector, async (bytes) =>
+          signForRole("feeCollector", HEDERA_DERIVATION_PATH, bytes),
+        );
+      }
+
       append("info", "Submitting…");
       const resp = await tx.execute(client);
       const receipt = await resp.getReceipt(client);
