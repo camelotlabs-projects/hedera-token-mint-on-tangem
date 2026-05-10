@@ -178,12 +178,49 @@ export function ManageScreen({
         }
         case "kycGrant":
         case "kycRevoke": {
-          if (!accountId.trim()) throw new Error("Target account ID is required");
-          tx = (op === "kycGrant" ? buildKycGrant : buildKycRevoke)(client, {
-            tokenId: id,
-            accountId: accountId.trim(),
-          });
-          break;
+          // Batch mode: accountId field accepts multiple lines, one per
+          // account. App processes each sequentially with one Tangem tap
+          // per account. Treasury card stays out for the whole loop.
+          const accounts = accountId
+            .split(/\s+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (accounts.length === 0) throw new Error("Provide at least one target account");
+
+          appendLog("info", `${OP_LABELS[op]} → ${id} for ${accounts.length} account(s)`);
+          const builder = op === "kycGrant" ? buildKycGrant : buildKycRevoke;
+          const successes: string[] = [];
+          const failures: { account: string; error: string }[] = [];
+
+          for (let i = 0; i < accounts.length; i++) {
+            const acc = accounts[i];
+            try {
+              const innerTx = builder(client, { tokenId: id, accountId: acc });
+              appendLog("info", `[${i + 1}/${accounts.length}] ${acc} — tap treasury card`);
+              await innerTx.signWith(TANGEM_KEYS.treasury, async (bytes: Uint8Array) =>
+                signForRole("treasury", HEDERA_DERIVATION_PATH, bytes),
+              );
+              const r = await innerTx.execute(client);
+              const rec = await r.getReceipt(client);
+              successes.push(acc);
+              appendLog("ok", `[${i + 1}/${accounts.length}] ${acc} ✓ ${rec.status.toString()}`);
+              if (i < accounts.length - 1) {
+                // give iOS NFC stack time to tear the previous session down
+                await new Promise((res) => setTimeout(res, 1500));
+              }
+            } catch (e) {
+              const msg = (e as Error).message;
+              failures.push({ account: acc, error: msg });
+              appendLog("err", `[${i + 1}/${accounts.length}] ${acc} ✗ ${msg}`);
+            }
+          }
+
+          const summary = `${OP_LABELS[op]}: ${successes.length}/${accounts.length} succeeded`;
+          appendLog(failures.length === 0 ? "ok" : "err", summary);
+          setLastStatus(summary);
+          setLastTxId(failures.length === 0 ? "" : `${failures.length} failed`);
+          client.close();
+          return; // skip the single-tx tail below
         }
         case "transfer":
         case "airdrop": {
@@ -272,13 +309,20 @@ export function ManageScreen({
     isSendOp;
   const isUpdate = op === "update";
 
-  const accountFieldLabel = isSendOp ? "Recipient account" : "Target account";
+  const isKycOp = op === "kycGrant" || op === "kycRevoke";
+  const accountFieldLabel = isSendOp
+    ? "Recipient account"
+    : isKycOp
+      ? "Target accounts (one per line for batch)"
+      : "Target account";
   const accountFieldHint =
     op === "transfer"
       ? "Must have an associated slot for this token (auto-association or manual TokenAssociate)."
       : op === "airdrop"
         ? "No association needed. If recipient has free auto-assoc slots the token lands immediately; otherwise it sits as a pending claim until the recipient accepts it."
-        : undefined;
+        : isKycOp
+          ? "Paste one account per line. The app loops through each one with a single tap on the treasury card per account. Failures are reported per account; remaining accounts continue."
+          : undefined;
 
   return (
     <View>
@@ -373,9 +417,10 @@ export function ManageScreen({
             hint={accountFieldHint}
             value={accountId}
             onChangeText={setAccountId}
-            placeholder="0.0.X"
+            placeholder={isKycOp ? "0.0.X\n0.0.Y\n0.0.Z" : "0.0.X"}
             autoCapitalize="none"
             mono
+            multiline={isKycOp}
           />
         )}
 
