@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { HEDERA_DERIVATION_PATH, TANGEM_KEYS } from "../config";
+import { HEDERA_DERIVATION_PATH, NETWORK, TANGEM_KEYS } from "../config";
 import { makeClient } from "../hedera";
 import { signForRole } from "../tangem";
 import {
@@ -69,6 +69,72 @@ export function ManageScreen({
   });
   const toggleRemove = (k: RemovableKey) =>
     setRemoveKeys((s) => ({ ...s, [k]: !s[k] }));
+
+  // KYC batch state — selection map keyed by account id, value = include in grant.
+  // Source of truth is `accountId` (the textarea); selection mirrors parsed lines.
+  const [kycSelection, setKycSelection] = useState<Record<string, boolean>>({});
+  const [kycFetching, setKycFetching] = useState(false);
+
+  const parsedAccounts = (() => {
+    if (op !== "kycGrant" && op !== "kycRevoke") return [] as string[];
+    return Array.from(
+      new Set(
+        accountId
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    );
+  })();
+
+  // Whenever the accountId textarea changes, default-include any new lines.
+  useEffect(() => {
+    setKycSelection((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const a of parsedAccounts) next[a] = prev[a] ?? true;
+      return next;
+    });
+  }, [accountId, op]);
+
+  const toggleKyc = (a: string) =>
+    setKycSelection((s) => ({ ...s, [a]: !s[a] }));
+
+  const fetchKycCandidates = async () => {
+    if (!tokenId.trim()) {
+      setError("Token ID is required to fetch holders");
+      return;
+    }
+    setKycFetching(true);
+    setError(null);
+    try {
+      const network = NETWORK === "mainnet" ? "mainnet-public" : "testnet";
+      const base = `https://${network}.mirrornode.hedera.com`;
+      const r = await fetch(`${base}/api/v1/tokens/${tokenId.trim()}/balances?limit=100`);
+      const j: any = await r.json();
+      const accounts: string[] = (j?.balances ?? []).map((b: any) => b.account as string);
+      // Filter out accounts that already have KYC granted (skip GRANTED for grant op).
+      const filtered: string[] = [];
+      for (const a of accounts) {
+        try {
+          const rr = await fetch(`${base}/api/v1/accounts/${a}/tokens?token.id=${tokenId.trim()}`);
+          const jj: any = await rr.json();
+          const status = jj?.tokens?.[0]?.kyc_status;
+          if (op === "kycGrant" && status === "NOT_GRANTED") filtered.push(a);
+          else if (op === "kycRevoke" && status === "GRANTED") filtered.push(a);
+        } catch {}
+      }
+      if (filtered.length === 0) {
+        appendLog("info", `No holders need ${op === "kycGrant" ? "KYC grant" : "KYC revoke"}.`);
+        return;
+      }
+      setAccountId(filtered.join("\n"));
+      appendLog("ok", `Fetched ${filtered.length} candidate(s) for ${OP_LABELS[op]}.`);
+    } catch (e) {
+      setError(`Fetch failed: ${(e as Error).message}`);
+    } finally {
+      setKycFetching(false);
+    }
+  };
 
   const targetReady = tokenId.trim().length > 0 && operatorKey.trim().length > 0 && treasuryScanned;
 
@@ -178,14 +244,9 @@ export function ManageScreen({
         }
         case "kycGrant":
         case "kycRevoke": {
-          // Batch mode: accountId field accepts multiple lines, one per
-          // account. App processes each sequentially with one Tangem tap
-          // per account. Treasury card stays out for the whole loop.
-          const accounts = accountId
-            .split(/\s+/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-          if (accounts.length === 0) throw new Error("Provide at least one target account");
+          // Batch mode: process only checked accounts from the parsed list.
+          const accounts = parsedAccounts.filter((a) => kycSelection[a]);
+          if (accounts.length === 0) throw new Error("Tick at least one target account");
 
           appendLog("info", `${OP_LABELS[op]} → ${id} for ${accounts.length} account(s)`);
           const builder = op === "kycGrant" ? buildKycGrant : buildKycRevoke;
@@ -424,6 +485,34 @@ export function ManageScreen({
           />
         )}
 
+        {isKycOp && (
+          <View style={styles.kycBlock}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+              <PrimaryButton
+                label={kycFetching ? "Fetching…" : `Fetch ${op === "kycGrant" ? "NOT_GRANTED" : "GRANTED"} holders from mirror`}
+                onPress={fetchKycCandidates}
+                disabled={kycFetching || !tokenId.trim()}
+                loading={kycFetching}
+              />
+            </View>
+            {parsedAccounts.length > 0 && (
+              <View style={{ marginTop: spacing.md }}>
+                <Text style={styles.fieldLabel}>
+                  {parsedAccounts.filter((a) => kycSelection[a]).length} / {parsedAccounts.length} selected
+                </Text>
+                {parsedAccounts.map((a) => (
+                  <Checkbox
+                    key={a}
+                    label={a}
+                    checked={!!kycSelection[a]}
+                    onPress={() => toggleKyc(a)}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+
         {isUpdate && (
           <>
             <Input label="New name" value={updateName} onChangeText={setUpdateName} placeholder="(unchanged if empty)" />
@@ -475,6 +564,9 @@ const styles = StyleSheet.create({
   },
   removeBlock: {
     marginTop: spacing.lg,
+  },
+  kycBlock: {
+    marginTop: spacing.md,
   },
   row: {
     flexDirection: "row",
