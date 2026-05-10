@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { HEDERA_DERIVATION_PATH, NETWORK, TANGEM_KEYS } from "../config";
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ACCOUNTS, HEDERA_DERIVATION_PATH, NETWORK, TANGEM_KEYS } from "../config";
 import { makeClient } from "../hedera";
 import { signForRole } from "../tangem";
 import {
@@ -44,7 +44,11 @@ export function ManageScreen({
   appendLog,
 }: Props) {
   const [tokenId, setTokenId] = useState("");
-  const [decimals, setDecimals] = useState("8");
+  const [decimals, setDecimals] = useState("7");
+  const [treasuryTokens, setTreasuryTokens] = useState<
+    { id: string; symbol: string; name: string; type: string }[]
+  >([]);
+  const [tokensFetching, setTokensFetching] = useState(false);
   const [op, setOp] = useState<ManageOp>("mint");
   const [error, setError] = useState<string | null>(null);
   const [lastTxId, setLastTxId] = useState<string | null>(null);
@@ -98,6 +102,45 @@ export function ManageScreen({
 
   const toggleKyc = (a: string) =>
     setKycSelection((s) => ({ ...s, [a]: !s[a] }));
+
+  const fetchTreasuryTokens = async () => {
+    setTokensFetching(true);
+    try {
+      const network = NETWORK === "mainnet" ? "mainnet-public" : "testnet";
+      const base = `https://${network}.mirrornode.hedera.com`;
+      const treasury = ACCOUNTS.treasury.toString();
+      const r = await fetch(`${base}/api/v1/accounts/${treasury}/tokens?limit=100`);
+      const j: any = await r.json();
+      const ids: string[] = (j?.tokens ?? []).map((t: any) => t.token_id as string);
+      const enriched = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const rr = await fetch(`${base}/api/v1/tokens/${id}`);
+            const jj: any = await rr.json();
+            return {
+              id,
+              symbol: (jj?.symbol as string) ?? id,
+              name: (jj?.name as string) ?? "",
+              type: (jj?.type as string) ?? "",
+            };
+          } catch {
+            return { id, symbol: id, name: "", type: "" };
+          }
+        }),
+      );
+      setTreasuryTokens(enriched);
+    } catch (e) {
+      appendLog("err", `Token list fetch failed: ${(e as Error).message}`);
+    } finally {
+      setTokensFetching(false);
+    }
+  };
+
+  // Auto-load the token picker once, when the screen mounts.
+  useEffect(() => {
+    fetchTreasuryTokens();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchKycCandidates = async () => {
     if (!tokenId.trim()) {
@@ -388,9 +431,42 @@ export function ManageScreen({
   return (
     <View>
       <Section step={2} title="Target token" subtitle="The token you want to act on" state={treasuryScanned ? "active" : "locked"}>
+        {treasuryTokens.length > 0 && (
+          <View style={styles.tokenPicker}>
+            <Text style={styles.fieldLabel}>Tokens in treasury</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+              {treasuryTokens.map((t) => {
+                const selected = tokenId.trim() === t.id;
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    onPress={() => {
+                      setTokenId(t.id);
+                      // NFTs always have decimals 0; FT keep user-set value.
+                      if (t.type === "NON_FUNGIBLE_UNIQUE") setDecimals("0");
+                    }}
+                    style={[styles.tokenPill, selected && styles.tokenPillSelected]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.tokenPillSymbol, selected && styles.tokenPillTextSelected]}>{t.symbol}</Text>
+                    <Text style={[styles.tokenPillId, selected && styles.tokenPillTextSelected]}>{t.id}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={{ flexDirection: "row", marginTop: spacing.sm }}>
+              <PrimaryButton
+                label={tokensFetching ? "Refreshing…" : "Refresh"}
+                onPress={fetchTreasuryTokens}
+                disabled={tokensFetching}
+                loading={tokensFetching}
+              />
+            </View>
+          </View>
+        )}
         <Input
           label="Token ID"
-          hint="e.g. 0.0.1234567"
+          hint="Pick from the list above or paste manually."
           value={tokenId}
           onChangeText={setTokenId}
           placeholder="0.0.X"
@@ -567,6 +643,38 @@ const styles = StyleSheet.create({
   },
   kycBlock: {
     marginTop: spacing.md,
+  },
+  tokenPicker: {
+    marginBottom: spacing.md,
+  },
+  tokenPill: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.bg,
+    marginRight: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  tokenPillSelected: {
+    borderColor: palette.accent,
+    backgroundColor: palette.accent,
+  },
+  tokenPillSymbol: {
+    ...type.body,
+    color: palette.textPrimary,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+  },
+  tokenPillId: {
+    ...type.mono,
+    color: palette.textSecondary,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  tokenPillTextSelected: {
+    color: palette.accentOn,
   },
   row: {
     flexDirection: "row",
