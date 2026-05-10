@@ -2,7 +2,9 @@ import "react-native-get-random-values";
 import "text-encoding-polyfill";
 import { useMemo, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -256,9 +258,16 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <StatusBar style="light" />
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={0}
+      >
       <ScrollView
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets
       >
         <View style={styles.header}>
           <Text style={styles.eyebrow}>{NETWORK.toUpperCase()}</Text>
@@ -620,6 +629,7 @@ export default function App() {
           </View>
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
