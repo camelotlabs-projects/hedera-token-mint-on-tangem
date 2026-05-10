@@ -291,35 +291,78 @@ export function ManageScreen({
           const accounts = parsedAccounts.filter((a) => kycSelection[a]);
           if (accounts.length === 0) throw new Error("Tick at least one target account");
 
-          appendLog("info", `${OP_LABELS[op]} → ${id} for ${accounts.length} account(s)`);
+          // Pre-flight: check each account's relationship to the token. Skip
+          // any that haven't associated yet (TokenAssociate is the buyer's
+          // job, in their own wallet). Skip those already in the desired
+          // KYC state. This avoids burning Tangem taps on guaranteed fails.
+          const network = NETWORK === "mainnet" ? "mainnet-public" : "testnet";
+          const base = `https://${network}.mirrornode.hedera.com`;
+          appendLog("info", `Pre-flighting ${accounts.length} account(s) against mirror…`);
+          const eligible: string[] = [];
+          const skipped: { account: string; reason: string }[] = [];
+          for (const a of accounts) {
+            try {
+              const rr = await fetch(`${base}/api/v1/accounts/${a}/tokens?token.id=${id}`);
+              const jj: any = await rr.json();
+              const rel = jj?.tokens?.[0];
+              if (!rel) {
+                skipped.push({ account: a, reason: "not associated with token" });
+                continue;
+              }
+              const status = rel.kyc_status;
+              if (op === "kycGrant" && status === "GRANTED") {
+                skipped.push({ account: a, reason: "already GRANTED" });
+                continue;
+              }
+              if (op === "kycRevoke" && status !== "GRANTED") {
+                skipped.push({ account: a, reason: `kyc=${status}` });
+                continue;
+              }
+              eligible.push(a);
+            } catch (e) {
+              skipped.push({ account: a, reason: `mirror error: ${(e as Error).message}` });
+            }
+          }
+          for (const s of skipped) {
+            appendLog("info", `skip ${s.account} — ${s.reason}`);
+          }
+          if (eligible.length === 0) {
+            const summary = `${OP_LABELS[op]}: 0/${accounts.length} eligible (all skipped)`;
+            appendLog("err", summary);
+            setLastStatus(summary);
+            client.close();
+            return;
+          }
+
+          appendLog("info", `${OP_LABELS[op]} → ${id} for ${eligible.length} eligible account(s) (${skipped.length} skipped)`);
           const builder = op === "kycGrant" ? buildKycGrant : buildKycRevoke;
           const successes: string[] = [];
           const failures: { account: string; error: string }[] = [];
 
-          for (let i = 0; i < accounts.length; i++) {
-            const acc = accounts[i];
+          for (let i = 0; i < eligible.length; i++) {
+            const acc = eligible[i];
             try {
               const innerTx = builder(client, { tokenId: id, accountId: acc });
-              appendLog("info", `[${i + 1}/${accounts.length}] ${acc} — tap treasury card`);
+              appendLog("info", `[${i + 1}/${eligible.length}] ${acc} — tap treasury card`);
               await innerTx.signWith(TANGEM_KEYS.treasury, async (bytes: Uint8Array) =>
                 signForRole("treasury", HEDERA_DERIVATION_PATH, bytes),
               );
               const r = await innerTx.execute(client);
               const rec = await r.getReceipt(client);
               successes.push(acc);
-              appendLog("ok", `[${i + 1}/${accounts.length}] ${acc} ✓ ${rec.status.toString()}`);
-              if (i < accounts.length - 1) {
+              appendLog("ok", `[${i + 1}/${eligible.length}] ${acc} ✓ ${rec.status.toString()}`);
+              if (i < eligible.length - 1) {
                 // give iOS NFC stack time to tear the previous session down
                 await new Promise((res) => setTimeout(res, 1500));
               }
             } catch (e) {
               const msg = (e as Error).message;
               failures.push({ account: acc, error: msg });
-              appendLog("err", `[${i + 1}/${accounts.length}] ${acc} ✗ ${msg}`);
+              appendLog("err", `[${i + 1}/${eligible.length}] ${acc} ✗ ${msg}`);
             }
           }
 
-          const summary = `${OP_LABELS[op]}: ${successes.length}/${accounts.length} succeeded`;
+          const summary = `${OP_LABELS[op]}: ${successes.length}/${eligible.length} succeeded (${skipped.length} skipped, ${failures.length} failed)`;
           appendLog(failures.length === 0 ? "ok" : "err", summary);
           setLastStatus(summary);
           setLastTxId(failures.length === 0 ? "" : `${failures.length} failed`);
