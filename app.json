@@ -26,6 +26,9 @@
       "package": "app.hederatokenmint",
       "permissions": ["android.permission.NFC"]
     },
-    "plugins": ["expo-dev-client"]
+    "plugins": [
+      "expo-dev-client",
+      "./plugins/with-tangem-modulemap-fix"
+    ]
   }
 }

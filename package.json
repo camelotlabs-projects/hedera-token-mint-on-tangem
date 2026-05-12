@@ -10,7 +10,8 @@
     "ios": "expo run:ios --device",
     "android": "expo run:android",
     "prebuild": "expo prebuild --clean",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.2.3",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@babel/core": "^7.25.0",
     "@types/react": "~18.3.12",
+    "patch-package": "^8.0.1",
     "typescript": "^5.6.0"
   },
   "overrides": {

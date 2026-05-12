@@ -1,0 +1,377 @@
+diff --git a/node_modules/tangem-sdk-react-native/RNTangemSdk.podspec b/node_modules/tangem-sdk-react-native/RNTangemSdk.podspec
+index 5fc07a9..f1178bd 100644
+--- a/node_modules/tangem-sdk-react-native/RNTangemSdk.podspec
++++ b/node_modules/tangem-sdk-react-native/RNTangemSdk.podspec
+@@ -24,7 +24,11 @@ Pod::Spec.new do |s|
+   s.swift_version = '5.0'
+   
+   # deps
+-  s.dependency 'TangemSdk', "3.11.0"
++  # Pinned to 3.9.0 — laatste 3.9.x op CocoaPods trunk (3.9.2 is alleen op Android).
++  # Avoids submodule modulemap-resolution issue in 3.10+:
++  #   "unable to resolve module dependency: 'TangemSdk_secp256k1'"
++  # The ed25519_slip0010 curve is beschikbaar sinds 3.x — geen feature-verlies.
++  s.dependency 'TangemSdk', "3.9.0"
+   # new archt deps
+   install_modules_dependencies(s)
+   
+diff --git a/node_modules/tangem-sdk-react-native/android/src/main/java/com/tangem/RNTangemSdk/RNTangemSdkModule.kt b/node_modules/tangem-sdk-react-native/android/src/main/java/com/tangem/RNTangemSdk/RNTangemSdkModule.kt
+index b703bb9..49429cd 100644
+--- a/node_modules/tangem-sdk-react-native/android/src/main/java/com/tangem/RNTangemSdk/RNTangemSdkModule.kt
++++ b/node_modules/tangem-sdk-react-native/android/src/main/java/com/tangem/RNTangemSdk/RNTangemSdkModule.kt
+@@ -173,13 +173,13 @@ class RNTangemSdkModule(private val reactContext: ReactApplicationContext) :
+                     config.attestationMode = attestationMode
+                 }
+ 
+-                val defaultDerivationPath = optionsParser.getDefaultDerivationPath()
+-                if (defaultDerivationPath != null) {
+-                    val defaultDerivationPaths: MutableMap<EllipticCurve, List<DerivationPath>> =
+-                        mutableMapOf()
+-                    defaultDerivationPaths[EllipticCurve.Secp256k1] =
+-                        listOf(defaultDerivationPath)
+-                    config.defaultDerivationPaths = defaultDerivationPaths
++                // Supports two shapes (patched for ED25519/Hedera support):
++                //   1. String  → single path, hardcoded to Secp256k1 (legacy XRP/BTC behaviour)
++                //   2. Map     → { "ed25519_slip0010": ["m/44'/3030'/0'/0'/0'", ...], ... }
++                //                multi-curve, multi-path; required for Hedera SLIP-0010 derivation.
++                val multiCurvePaths = optionsParser.getDefaultDerivationPaths()
++                if (multiCurvePaths != null && multiCurvePaths.isNotEmpty()) {
++                    config.defaultDerivationPaths = multiCurvePaths.toMutableMap()
+                 }
+                 // set the new config to the SDK
+                 sdk.config = config
+@@ -581,10 +581,141 @@ class OptionsParser(private val options: ReadableMap?) {
+     }
+ 
+     fun getDefaultDerivationPath(): DerivationPath? {
++        // Legacy single-path accessor (kept for backwards compatibility with callers
++        // that only need secp256k1; the multi-curve path goes via getDefaultDerivationPaths).
+         val defaultPath = options?.getString("defaultDerivationPaths")
+         if (defaultPath.isNullOrEmpty()) {
+             return null
+         }
+         return DerivationPath(rawPath = defaultPath)
+     }
++
++    /**
++     * Resolve a JS-side curve name (e.g. "ed25519_slip0010", "secp256k1") to the SDK enum.
++     *
++     * Strategy:
++     *   1. Explicit hardcoded mapping for known Tangem-Android SDK enum names (PascalCase).
++     *      This is the **primary, safest** path — reflection-free, deterministic.
++     *   2. Heuristic name-variant probing (snake_case, PascalCase, lowercase, etc.).
++     *      Fallback for SDK versions where enum names diverge from our hardcoded list.
++     *   3. Brute-force scan via `EllipticCurve.values()` matching by name/toString().
++     *
++     * Returns null if no match — caller skips that curve silently.
++     */
++    private fun resolveCurve(jsName: String): EllipticCurve? {
++        val normalized = jsName.lowercase()
++
++        // Strategy 1: explicit known mappings (deterministic, no reflection surprises).
++        // Maps JS rawValue (lowercase snake_case, matches iOS EllipticCurve.swift) to
++        // the Tangem-android Kotlin enum name (PascalCase, observed in v3.9.2 source).
++        val explicitKotlinName: String? = when (normalized) {
++            "secp256k1" -> "Secp256k1"
++            "secp256r1" -> "Secp256r1"
++            "ed25519" -> "Ed25519"
++            "ed25519_slip0010" -> "Ed25519Slip0010"
++            "bip0340" -> "Bip0340"
++            "bls12381_g2" -> "Bls12381G2"
++            "bls12381_g2_aug" -> "Bls12381G2Aug"
++            "bls12381_g2_pop" -> "Bls12381G2Pop"
++            else -> null
++        }
++        if (explicitKotlinName != null) {
++            runCatching { EllipticCurve.valueOf(explicitKotlinName) }.getOrNull()?.let { return it }
++        }
++
++        // Strategy 2: heuristic name-variant probing (covers SDK refactors where the
++        // enum naming convention diverges from our hardcoded map above).
++        val variants = mutableSetOf(
++            jsName,
++            jsName.lowercase(),
++            jsName.uppercase(),
++            // snake_case → PascalCase: "ed25519_slip0010" → "Ed25519Slip0010"
++            jsName.split('_').joinToString("") { part ->
++                part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
++            },
++            // First-letter capitalised: "secp256k1" → "Secp256k1"
++            jsName.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() },
++            // Strip underscores: "ed25519_slip0010" → "Ed25519slip0010"
++            jsName.replace("_", "").replaceFirstChar {
++                if (it.isLowerCase()) it.titlecase() else it.toString()
++            }
++        )
++        for (variant in variants) {
++            runCatching { EllipticCurve.valueOf(variant) }.getOrNull()?.let { return it }
++        }
++
++        // Strategy 3: brute-force scan all entries case-insensitively.
++        val match = EllipticCurve.values().firstOrNull { entry ->
++            entry.name.equals(jsName, ignoreCase = true) ||
++                entry.toString().equals(jsName, ignoreCase = true) ||
++                entry.name.replace("_", "").equals(jsName.replace("_", ""), ignoreCase = true)
++        }
++        if (match == null) {
++            android.util.Log.w(
++                "RNTangemSdk",
++                "resolveCurve: no EllipticCurve match for JS curve name \"$jsName\""
++            )
++        }
++        return match
++    }
++
++    /**
++     * Multi-curve, multi-path derivation paths.
++     * Accepts a ReadableMap with curve-name keys mapping to ReadableArrays of raw path strings:
++     *   { "ed25519_slip0010": ["m/44'/3030'/0'/0'/0'", ...], "secp256k1": [...] }
++     * Also accepts a single string (legacy: maps to Secp256k1) and a single array of strings
++     * (assumed Secp256k1 for backwards compatibility).
++     * Unknown curve names and unparseable paths are silently skipped, never throw.
++     */
++    fun getDefaultDerivationPaths(): Map<EllipticCurve, List<DerivationPath>>? {
++        if (options == null || !options.hasKey("defaultDerivationPaths")) return null
++
++        val type = options.getType("defaultDerivationPaths")
++
++        // Shape 1: Map { curveName: [pathString, ...] }
++        if (type == ReadableType.Map) {
++            val dict = options.getMap("defaultDerivationPaths") ?: return null
++            val result = mutableMapOf<EllipticCurve, List<DerivationPath>>()
++            val iter = dict.keySetIterator()
++            while (iter.hasNextKey()) {
++                val curveName = iter.nextKey()
++                val curve = resolveCurve(curveName) ?: continue
++                if (dict.getType(curveName) != ReadableType.Array) continue
++                val arr = dict.getArray(curveName) ?: continue
++                val paths = mutableListOf<DerivationPath>()
++                for (i in 0 until arr.size()) {
++                    if (arr.getType(i) != ReadableType.String) continue
++                    val raw = arr.getString(i) ?: continue
++                    runCatching { DerivationPath(rawPath = raw) }.getOrNull()?.let { paths.add(it) }
++                }
++                if (paths.isNotEmpty()) {
++                    result[curve] = paths
++                }
++            }
++            return if (result.isEmpty()) null else result
++        }
++
++        // Shape 2: Array of path strings — assumed Secp256k1 (legacy)
++        if (type == ReadableType.Array) {
++            val arr = options.getArray("defaultDerivationPaths") ?: return null
++            val paths = mutableListOf<DerivationPath>()
++            for (i in 0 until arr.size()) {
++                if (arr.getType(i) != ReadableType.String) continue
++                val raw = arr.getString(i) ?: continue
++                runCatching { DerivationPath(rawPath = raw) }.getOrNull()?.let { paths.add(it) }
++            }
++            return if (paths.isEmpty()) null else mapOf(EllipticCurve.Secp256k1 to paths)
++        }
++
++        // Shape 3: Single path string — assumed Secp256k1 (legacy v3.1.0 behaviour)
++        if (type == ReadableType.String) {
++            val raw = options.getString("defaultDerivationPaths") ?: return null
++            if (raw.isEmpty()) return null
++            return runCatching { DerivationPath(rawPath = raw) }
++                .getOrNull()
++                ?.let { mapOf(EllipticCurve.Secp256k1 to listOf(it)) }
++        }
++
++        return null
++    }
+ }
+diff --git a/node_modules/tangem-sdk-react-native/dist/types.d.ts b/node_modules/tangem-sdk-react-native/dist/types.d.ts
+index 9a680fb..a1c9784 100644
+--- a/node_modules/tangem-sdk-react-native/dist/types.d.ts
++++ b/node_modules/tangem-sdk-react-native/dist/types.d.ts
+@@ -7,8 +7,18 @@ export declare enum EncryptionMode {
+ export declare enum EllipticCurve {
+     Secp256k1 = "secp256k1",
+     Secp256r1 = "secp256r1",
+-    Ed25519 = "ed25519"
++    Ed25519 = "ed25519",
++    Ed25519Slip0010 = "ed25519_slip0010",
++    Bip0340 = "bip0340",
++    Bls12381G2 = "bls12381_G2",
++    Bls12381G2Aug = "bls12381_G2_AUG",
++    Bls12381G2Pop = "bls12381_G2_POP"
+ }
++/**
++ * Multi-curve derivation paths shape used by the patched native bridge.
++ * Keys are EllipticCurve rawValues; values are arrays of raw derivation-path strings.
++ */
++export type DefaultDerivationPathsMap = Partial<Record<`${EllipticCurve}`, string[]>>;
+ export declare enum LinkedTerminalStatus {
+     Current = "current",
+     Other = "other",
+@@ -347,9 +357,13 @@ export interface OptionsStartSession extends OptionsCommon {
+     /**
+      * A card with HD wallets feature enabled will derive keys automatically on "scan" and "createWallet". Repeated items will be ignored
+      * All derived keys will be stored in `Card.Wallet.derivedKeys`.
+-     * Only `secp256k1` and `ed25519` supported
++     *
++     * Three input shapes accepted by the patched native bridge:
++     *   1. `string` — single path; mapped to `secp256k1` (legacy XRP/BTC behaviour)
++     *   2. `string[]` — array of paths; mapped to `secp256k1` (legacy convenience)
++     *   3. `DefaultDerivationPathsMap` — multi-curve, multi-path; required for Hedera/ED25519
+      */
+-    defaultDerivationPaths?: string;
++    defaultDerivationPaths?: string | string[] | DefaultDerivationPathsMap;
+ }
+ export type RNTangemSdkModule = {
+     startSession(options: OptionsStartSession): Promise<void>;
+diff --git a/node_modules/tangem-sdk-react-native/dist/types.js b/node_modules/tangem-sdk-react-native/dist/types.js
+index 938c1da..acd3191 100644
+--- a/node_modules/tangem-sdk-react-native/dist/types.js
++++ b/node_modules/tangem-sdk-react-native/dist/types.js
+@@ -9,6 +9,11 @@ export var EllipticCurve;
+     EllipticCurve["Secp256k1"] = "secp256k1";
+     EllipticCurve["Secp256r1"] = "secp256r1";
+     EllipticCurve["Ed25519"] = "ed25519";
++    EllipticCurve["Ed25519Slip0010"] = "ed25519_slip0010";
++    EllipticCurve["Bip0340"] = "bip0340";
++    EllipticCurve["Bls12381G2"] = "bls12381_G2";
++    EllipticCurve["Bls12381G2Aug"] = "bls12381_G2_AUG";
++    EllipticCurve["Bls12381G2Pop"] = "bls12381_G2_POP";
+ })(EllipticCurve || (EllipticCurve = {}));
+ export var LinkedTerminalStatus;
+ (function (LinkedTerminalStatus) {
+diff --git a/node_modules/tangem-sdk-react-native/ios/SwiftTangemSdkPluging.swift b/node_modules/tangem-sdk-react-native/ios/SwiftTangemSdkPluging.swift
+index 5297768..fe9beaf 100644
+--- a/node_modules/tangem-sdk-react-native/ios/SwiftTangemSdkPluging.swift
++++ b/node_modules/tangem-sdk-react-native/ios/SwiftTangemSdkPluging.swift
+@@ -26,8 +26,12 @@ import TangemSdk
+                     config.attestationMode = attestationMode
+                 }
+                 // set default derivationPaths
+-                if let defaultDerivationPath = optionsParser.getDefaultDerivationPath() {
+-                    config.defaultDerivationPaths[.secp256k1] = [defaultDerivationPath]
++                // Supports two shapes (patched for ED25519/Hedera support):
++                //   1. String  → single path, hardcoded to .secp256k1 (legacy XRP/BTC behaviour)
++                //   2. Dict    → { "ed25519_slip0010": ["m/44'/3030'/0'/0'/0'", ...], ... }
++                //                multi-curve, multi-path; required for Hedera SLIP-0010 derivation.
++                if let defaultPaths = optionsParser.getDefaultDerivationPaths(), !defaultPaths.isEmpty {
++                    config.defaultDerivationPaths = defaultPaths
+                 }
+                 // set the new config to the SDK
+                 self.sdk.config = config
+@@ -366,4 +370,67 @@ class OptionsParser {
+         }
+         return nil
+     }
++
++    /// Case-insensitive resolver for EllipticCurve rawValues.
++    /// Tangem's EllipticCurve enum rawValues are lowercase snake_case (e.g. "ed25519_slip0010"),
++    /// but JS callers may send uppercase or mixed case. We accept both.
++    private func resolveCurve(_ jsName: String) -> EllipticCurve? {
++        // Try direct match first (fast path for correctly-cased input)
++        if let curve = EllipticCurve(rawValue: jsName) {
++            return curve
++        }
++        // Fallback: case-insensitive scan of all enum cases
++        let lower = jsName.lowercased()
++        if let curve = EllipticCurve(rawValue: lower) {
++            return curve
++        }
++        let match = EllipticCurve.allCases.first { $0.rawValue.lowercased() == lower }
++        if match == nil {
++            NSLog("[RNTangemSdk] resolveCurve: no EllipticCurve match for JS curve name \"\(jsName)\"")
++        }
++        return match
++    }
++
++    /// Multi-curve, multi-path derivation paths.
++    /// Accepts an NSDictionary with curve-name keys mapping to arrays of raw path strings:
++    ///   { "ed25519_slip0010": ["m/44'/3030'/0'/0'/0'", ...], "secp256k1": [...] }
++    /// Also accepts a single string (legacy: maps to .secp256k1) and a single array of strings
++    /// (assumed .secp256k1 for backwards compatibility).
++    /// Unknown curve names and unparseable paths are silently skipped, never throw.
++    func getDefaultDerivationPaths() -> [EllipticCurve: [DerivationPath]]? {
++        guard let raw = self.options?.object(forKey: "defaultDerivationPaths") else {
++            return nil
++        }
++
++        // Shape 1: Dictionary { curveName: [pathString, ...] }
++        if let dict = raw as? NSDictionary {
++            var result: [EllipticCurve: [DerivationPath]] = [:]
++            for (key, value) in dict {
++                guard let curveName = key as? String,
++                      let curve = resolveCurve(curveName),
++                      let pathStrings = value as? [String] else {
++                    continue
++                }
++                let paths: [DerivationPath] = pathStrings.compactMap { try? DerivationPath(rawPath: $0) }
++                if !paths.isEmpty {
++                    result[curve] = paths
++                }
++            }
++            return result.isEmpty ? nil : result
++        }
++
++        // Shape 2: Array of path strings — assumed secp256k1 (legacy)
++        if let pathStrings = raw as? [String] {
++            let paths: [DerivationPath] = pathStrings.compactMap { try? DerivationPath(rawPath: $0) }
++            return paths.isEmpty ? nil : [.secp256k1: paths]
++        }
++
++        // Shape 3: Single path string — assumed secp256k1 (legacy v3.1.0 behaviour)
++        if let singlePath = raw as? String,
++           let derivation = try? DerivationPath(rawPath: singlePath) {
++            return [.secp256k1: [derivation]]
++        }
++
++        return nil
++    }
+ }
+diff --git a/node_modules/tangem-sdk-react-native/src/types.ts b/node_modules/tangem-sdk-react-native/src/types.ts
+index 40295a3..3c6b0bf 100644
+--- a/node_modules/tangem-sdk-react-native/src/types.ts
++++ b/node_modules/tangem-sdk-react-native/src/types.ts
+@@ -10,8 +10,23 @@ export enum EllipticCurve {
+   Secp256k1 = "secp256k1",
+   Secp256r1 = "secp256r1",
+   Ed25519 = "ed25519",
++  // Hedera / SLIP-0010 hardened derivation (patched in for ED25519 multi-path support)
++  Ed25519Slip0010 = "ed25519_slip0010",
++  Bip0340 = "bip0340",
++  Bls12381G2 = "bls12381_G2",
++  Bls12381G2Aug = "bls12381_G2_AUG",
++  Bls12381G2Pop = "bls12381_G2_POP",
+ }
+ 
++/**
++ * Multi-curve derivation paths shape used by the patched native bridge.
++ * Keys are EllipticCurve rawValues; values are arrays of raw derivation-path strings.
++ *
++ * Example for Hedera:
++ *   { "ed25519_slip0010": ["m/44'/3030'/0'/0'/0'", "m/44'/3030'/0'/0'/1'"] }
++ */
++export type DefaultDerivationPathsMap = Partial<Record<`${EllipticCurve}`, string[]>>;
++
+ export enum LinkedTerminalStatus {
+   Current = "current",
+   Other = "other",
+@@ -393,9 +408,18 @@ export interface OptionsStartSession extends OptionsCommon {
+   /**
+    * A card with HD wallets feature enabled will derive keys automatically on "scan" and "createWallet". Repeated items will be ignored
+    * All derived keys will be stored in `Card.Wallet.derivedKeys`.
+-   * Only `secp256k1` and `ed25519` supported
+-   */
+-  defaultDerivationPaths?: string;
++   *
++   * Three input shapes accepted by the patched native bridge:
++   *   1. `string` — single path; mapped to `secp256k1` (legacy XRP/BTC behaviour, v3.1.0 default)
++   *   2. `string[]` — array of paths; mapped to `secp256k1` (legacy convenience)
++   *   3. `DefaultDerivationPathsMap` — multi-curve, multi-path; **required for Hedera/ED25519**
++   *
++   * Example for Hedera (16 accounts under BIP-44 path):
++   *   {
++   *     "ed25519_slip0010": Array.from({length: 16}, (_, i) => `m/44'/3030'/0'/0'/${i}'`)
++   *   }
++   */
++  defaultDerivationPaths?: string | string[] | DefaultDerivationPathsMap;
+ }
+ 
+ export type RNTangemSdkModule = {
