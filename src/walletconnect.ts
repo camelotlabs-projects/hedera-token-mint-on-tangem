@@ -208,16 +208,17 @@ async function onSessionRequest(event: any): Promise<void> {
         await tangemSignTx(tx);
         const client = makeClientForConnected();
         const resp = await tx.execute(client);
+        // Match the Hedera-wallet-connect library's response shape exactly:
+        // TransactionResponse.toJSON() — the dapp deserializes this back into
+        // a TransactionResponse to fetch the receipt itself. A bespoke object
+        // shape causes the dapp to treat it as a cancellation/malformed
+        // response.
         await wallet.respondSessionRequest({
           topic,
           response: {
             id,
             jsonrpc: "2.0",
-            result: {
-              transactionId: resp.transactionId.toString(),
-              nodeId: resp.nodeId.toString(),
-              transactionHash: Buffer.from(resp.transactionHash).toString("hex"),
-            },
+            result: (resp as any).toJSON(),
           },
         });
         client.close();
@@ -260,11 +261,7 @@ async function onSessionRequest(event: any): Promise<void> {
           response: {
             id,
             jsonrpc: "2.0",
-            result: {
-              transactionId: resp.transactionId.toString(),
-              nodeId: resp.nodeId.toString(),
-              transactionHash: Buffer.from(resp.transactionHash).toString("hex"),
-            },
+            result: (resp as any).toJSON(),
           },
         });
         client.close();
