@@ -1,5 +1,6 @@
 import "react-native-get-random-values";
 import "text-encoding-polyfill";
+import "./src/polyfills";
 import { useMemo, useState } from "react";
 import {
   KeyboardAvoidingView,
