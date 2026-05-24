@@ -86,8 +86,32 @@ if (typeof win.location === "undefined") {
   };
 }
 
-if (typeof win.navigator === "undefined") {
-  win.navigator = { userAgent: "react-native" };
+if (typeof win.navigator === "undefined" || typeof win.navigator !== "object") {
+  win.navigator = {};
+}
+// WalletConnect Core's relayer checks navigator.onLine — without this it
+// throws "No internet connection detected" before even opening the websocket.
+if (typeof win.navigator.onLine !== "boolean") {
+  Object.defineProperty(win.navigator, "onLine", {
+    value: true,
+    writable: true,
+    configurable: true,
+  });
+}
+if (typeof win.navigator.userAgent !== "string") {
+  win.navigator.userAgent = "react-native";
+}
+
+// WalletConnect also listens for online/offline events on window — no-op
+// the event registration so it doesn't error out.
+if (typeof win.addEventListener !== "function") {
+  win.addEventListener = () => {};
+}
+if (typeof win.removeEventListener !== "function") {
+  win.removeEventListener = () => {};
+}
+if (typeof win.dispatchEvent !== "function") {
+  win.dispatchEvent = () => false;
 }
 
 if (typeof win.localStorage === "undefined") {
