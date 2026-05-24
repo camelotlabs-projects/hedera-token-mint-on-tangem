@@ -340,7 +340,7 @@ export default function App() {
         </View>
 
         {mode === "connect" ? (
-          <ConnectScreen treasuryScanned={treasuryScanned} appendLog={append} />
+          <ConnectScreen appendLog={append} />
         ) : mode === "discover" ? (
           <DiscoverScreen />
         ) : mode === "manage" ? (

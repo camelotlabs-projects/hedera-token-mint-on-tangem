@@ -52,9 +52,18 @@ const METADATA = {
 const HEDERA_CHAIN =
   NETWORK === "mainnet" ? HederaChainId.Mainnet : HederaChainId.Testnet;
 
-/** Account ID we expose as the connected wallet. */
-const CONNECTED_ACCOUNT = ACCOUNTS.treasury.toString();
-const CONNECTED_KEY = TANGEM_KEYS.treasury;
+/**
+ * Account exposed as the connected wallet over WalletConnect.
+ *
+ * The emission wallet holds the 10M NØA reserved for SaucerSwap LP +
+ * public DEX distribution, so it's the one that has to sign liquidity-
+ * add and swap transactions. Treasury (0.0.10462288) is a different
+ * Tangem card and a different role.
+ */
+const CONNECTED_ACCOUNT = ACCOUNTS.emission.toString();
+const CONNECTED_KEY = TANGEM_KEYS.emission;
+/** Role string used by the tangem-sdk wrapper to address the right card. */
+const CONNECTED_ROLE = "emission";
 
 export type SessionInfo = {
   topic: string;
@@ -164,16 +173,16 @@ async function onSessionProposal(event: any): Promise<void> {
  * not the operator key. If a method ever genuinely needs the operator to
  * sign (e.g. running a query), it'll fail loudly and we can revisit.
  */
-function makeClientForTreasury(): Client {
+function makeClientForConnected(): Client {
   const c = NETWORK === "mainnet" ? Client.forMainnet() : Client.forTestnet();
   const dummy = PrivateKey.generateED25519();
-  c.setOperator(ACCOUNTS.treasury, dummy);
+  c.setOperator(ACCOUNTS.emission, dummy);
   return c;
 }
 
 async function tangemSignTx(tx: Transaction): Promise<Transaction> {
   await tx.signWith(CONNECTED_KEY, async (bytes) =>
-    signForRole("treasury", HEDERA_DERIVATION_PATH, bytes),
+    signForRole(CONNECTED_ROLE, HEDERA_DERIVATION_PATH, bytes),
   );
   return tx;
 }
@@ -197,7 +206,7 @@ async function onSessionRequest(event: any): Promise<void> {
       case HederaJsonRpcMethod.SignAndExecuteTransaction: {
         const tx = base64StringToTransaction(request.params.transactionList);
         await tangemSignTx(tx);
-        const client = makeClientForTreasury();
+        const client = makeClientForConnected();
         const resp = await tx.execute(client);
         await wallet.respondSessionRequest({
           topic,
@@ -221,7 +230,7 @@ async function onSessionRequest(event: any): Promise<void> {
             ? Buffer.from(request.params.body, "base64")
             : request.params.body;
         const sigBytes = await signForRole(
-          "treasury",
+          CONNECTED_ROLE,
           HEDERA_DERIVATION_PATH,
           bodyBytes,
         );
@@ -244,7 +253,7 @@ async function onSessionRequest(event: any): Promise<void> {
       }
       case HederaJsonRpcMethod.ExecuteTransaction: {
         const tx = base64StringToTransaction(request.params.transactionList);
-        const client = makeClientForTreasury();
+        const client = makeClientForConnected();
         const resp = await tx.execute(client);
         await wallet.respondSessionRequest({
           topic,
