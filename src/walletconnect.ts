@@ -184,6 +184,30 @@ function makeClientForConnected(): Client {
 }
 
 async function tangemSignTx(tx: Transaction): Promise<Transaction> {
+  // Hedera transactions can carry multiple SignedTransaction variants —
+  // one per node-account in the failover list. tx.signWith() calls the
+  // signer once per variant, which on Tangem means one NFC tap per
+  // variant. The user only ever taps once, the second prompt times out
+  // and the dapp sees "user cancelled" even though the first tap was
+  // successful.
+  //
+  // Workaround: before signing, trim the internal _signedTransactions
+  // list down to the first variant. Hedera SDK's execute() picks
+  // node[0] first anyway; the failover variants are only consulted on
+  // BUSY/UNAVAILABLE which is rare for a fresh submit. One Tangem tap
+  // covers it.
+  const inner: any = (tx as any)._signedTransactions;
+  const list = inner?.list ?? inner?._list ?? inner;
+  if (Array.isArray(list) && list.length > 1) {
+    console.log("[WC] trimming", list.length, "signed-tx variants down to 1");
+    list.length = 1;
+    // Mirror trim on _transactions / _nodeIds / _nodeAccountIds in case the
+    // SDK reads any of these arrays in lock-step with _signedTransactions.
+    for (const k of ["_transactions", "_transactionIds", "_nodeAccountIds"]) {
+      const arr = (tx as any)[k]?.list ?? (tx as any)[k]?._list ?? (tx as any)[k];
+      if (Array.isArray(arr) && arr.length > 1) arr.length = 1;
+    }
+  }
   await tx.signWith(CONNECTED_KEY, async (bytes) =>
     signForRole(CONNECTED_ROLE, HEDERA_DERIVATION_PATH, bytes),
   );
