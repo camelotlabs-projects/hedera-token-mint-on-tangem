@@ -26,8 +26,10 @@ import {
   Section,
 } from "../components";
 import { palette, spacing, type } from "../theme";
-import { ACCOUNTS, NETWORK } from "../config";
-import { scanCardForRole } from "../tangem";
+import { PublicKey as HederaPublicKey } from "@hashgraph/sdk";
+import RNTangemSdk from "tangem-sdk-react-native";
+import { ACCOUNTS, HEDERA_DERIVATION_PATH, NETWORK, TANGEM_KEYS } from "../config";
+import { getRoleWallet, scanCardForRole } from "../tangem";
 import {
   disconnectSession,
   initWalletConnect,
@@ -70,6 +72,50 @@ export function ConnectScreen({ appendLog }: Props) {
       if (unsub) unsub();
     };
   }, []);
+
+  const onVerifyEmissionSign = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const rw = getRoleWallet("emission");
+      if (!rw) throw new Error("Scan emission card first");
+      appendLog("info", `slip root: ${rw.slipPublicKey.slice(0, 16)}…`);
+
+      // Sign a deterministic dummy hash and verify offline against the
+      // expected emission pubkey. Tells us whether the card derives to the
+      // right account-key at HEDERA_DERIVATION_PATH.
+      const dummy = new Uint8Array(32);
+      for (let i = 0; i < 32; i++) dummy[i] = i + 1;
+      const dummyHex = Array.from(dummy)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      appendLog("info", `Tap emission card to sign dummy hash…`);
+      const r: any = await (RNTangemSdk as any).sign({
+        cardId: rw.cardId,
+        walletPublicKey: rw.slipPublicKey,
+        hashes: [dummyHex],
+        derivationPath: HEDERA_DERIVATION_PATH,
+      });
+      const sigHex = r.signatures?.[0] ?? "";
+      const sig = new Uint8Array(sigHex.length / 2);
+      for (let i = 0; i < sig.length; i++) sig[i] = parseInt(sigHex.substr(i * 2, 2), 16);
+
+      const expected = TANGEM_KEYS.emission;
+      const okExpected = expected.verify(dummy, sig);
+      appendLog(okExpected ? "ok" : "err", `verify against expected emission (${expected.toString().slice(0, 16)}…) = ${okExpected}`);
+
+      const root = HederaPublicKey.fromString(rw.slipPublicKey);
+      const okRoot = root.verify(dummy, sig);
+      appendLog(okRoot ? "err" : "ok", `verify against slip root = ${okRoot}${okRoot ? " ← SDK silently signed with ROOT" : ""}`);
+    } catch (e) {
+      const msg = (e as Error).message;
+      setError(msg);
+      appendLog("err", msg);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const onScanEmission = async () => {
     setBusy(true);
@@ -161,6 +207,16 @@ export function ConnectScreen({ appendLog }: Props) {
           disabled={busy || emissionScanned}
           loading={busy && !emissionScanned}
         />
+        {emissionScanned && (
+          <>
+            <View style={{ height: spacing.sm }} />
+            <GhostButton
+              label="Verify sign (debug)"
+              onPress={onVerifyEmissionSign}
+              disabled={busy}
+            />
+          </>
+        )}
       </Section>
 
       <Section
