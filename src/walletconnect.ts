@@ -40,7 +40,7 @@ import { signForRole } from "./tangem";
 const PROJECT_ID =
   // @ts-ignore — Expo env handling
   (typeof process !== "undefined" && process.env?.EXPO_PUBLIC_WALLETCONNECT_PROJECT_ID) ||
-  "ee23cfdf02e739918afad1fce8a4e85c";
+  "99f94d816f2e5c855b8f4c6ba80554c8";
 
 const METADATA = {
   name: "Hedera Token Mint",
