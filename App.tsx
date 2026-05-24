@@ -48,6 +48,8 @@ import {
 } from "./src/components";
 import { palette, radius, spacing, type } from "./src/theme";
 import { ManageScreen } from "./src/screens/ManageScreen";
+import { DiscoverScreen } from "./src/screens/DiscoverScreen";
+import { ConnectScreen } from "./src/screens/ConnectScreen";
 
 type LogEntry = { ts: string; level: "info" | "ok" | "err"; msg: string };
 
@@ -80,7 +82,7 @@ export default function App() {
     Inter_700Bold,
   });
 
-  const [mode, setMode] = useState<"create" | "manage">("create");
+  const [mode, setMode] = useState<"create" | "manage" | "discover" | "connect">("create");
   const [operatorKey, setOperatorKey] = useState("");
   const [treasuryScanned, setTreasuryScanned] = useState(false);
   const [feeCollectorScanned, setFeeCollectorScanned] = useState(false);
@@ -332,9 +334,15 @@ export default function App() {
         <View style={styles.modeRow}>
           <Radio label="Create new token" selected={mode === "create"} onPress={() => setMode("create")} />
           <Radio label="Manage existing" selected={mode === "manage"} onPress={() => setMode("manage")} />
+          <Radio label="Discover paths" selected={mode === "discover"} onPress={() => setMode("discover")} />
+          <Radio label="Connect dapp" selected={mode === "connect"} onPress={() => setMode("connect")} />
         </View>
 
-        {mode === "manage" ? (
+        {mode === "connect" ? (
+          <ConnectScreen treasuryScanned={treasuryScanned} appendLog={append} />
+        ) : mode === "discover" ? (
+          <DiscoverScreen />
+        ) : mode === "manage" ? (
           <ManageScreen
             operatorKey={operatorKey}
             treasuryScanned={treasuryScanned}

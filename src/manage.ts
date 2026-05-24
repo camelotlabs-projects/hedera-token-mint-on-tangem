@@ -8,7 +8,12 @@
  */
 
 import {
+  AccountAllowanceApproveTransaction,
   AccountId,
+  AccountUpdateTransaction,
+  ContractExecuteTransaction,
+  ContractFunctionParameters,
+  ContractId,
   Hbar,
   KeyList,
   NftId,
@@ -28,9 +33,13 @@ import {
   TransferTransaction,
   type Client,
 } from "@hashgraph/sdk";
-import { ACCOUNTS } from "./config";
+import Long from "long";
+import { ACCOUNTS, SAUCERSWAP_V1 } from "./config";
 
 const SINGLE_NODE = [new AccountId(3)];
+
+/** Convert bigint to unsigned Long (uint64) — required for ContractFunctionParameters.addUint256 */
+const bigIntToLong = (n: bigint): Long => Long.fromString(n.toString(), true);
 
 const baseTx = <T extends { setTransactionId: any; setNodeAccountIds: any; setMaxTransactionFee: any }>(
   tx: T,
@@ -54,7 +63,12 @@ export type ManageOp =
   | "unpause"
   | "wipe"
   | "kycGrant"
-  | "kycRevoke";
+  | "kycRevoke"
+  // SaucerSwap pool-creatie pipeline (DRIP → Emission → SaucerSwap)
+  | "hbarTransfer"
+  | "enableAutoAssoc"
+  | "approveAllowance"
+  | "addLiquidityNewPool";
 
 export const OP_LABELS: Record<ManageOp, string> = {
   mint: "Mint additional supply",
@@ -69,6 +83,10 @@ export const OP_LABELS: Record<ManageOp, string> = {
   wipe: "Wipe account",
   kycGrant: "Grant KYC",
   kycRevoke: "Revoke KYC",
+  hbarTransfer: "Transfer HBAR (DRIP → Emission)",
+  enableAutoAssoc: "Enable LP auto-association (Emission)",
+  approveAllowance: "Approve token allowance (Emission → Router)",
+  addLiquidityNewPool: "Create SaucerSwap pool (Emission)",
 };
 
 /** Multiplies a display amount by 10^decimals to get base units. */
@@ -142,6 +160,8 @@ export interface UpdateParams {
   name?: string;
   symbol?: string;
   memo?: string;
+  /** HTS metadata-field (HIP-657). Max 100 bytes. Typically SHA-256 hash of the JSON pointed to by memo. */
+  metadata?: Uint8Array;
   autoRenewPeriodSeconds?: number;
   /** Roles to permanently remove. Each becomes an empty KeyList in the tx. */
   removeKeys?: RemovableKey[];
@@ -151,6 +171,7 @@ export function buildUpdate(client: Client, p: UpdateParams): TokenUpdateTransac
   if (p.name?.trim()) tx.setTokenName(p.name.trim());
   if (p.symbol?.trim()) tx.setTokenSymbol(p.symbol.trim());
   if (p.memo !== undefined) tx.setTokenMemo(p.memo);
+  if (p.metadata && p.metadata.length > 0) tx.setMetadata(p.metadata);
   if (p.autoRenewPeriodSeconds && p.autoRenewPeriodSeconds > 0) {
     tx.setAutoRenewPeriod(p.autoRenewPeriodSeconds);
   }
@@ -319,4 +340,136 @@ export function buildAirdrop(client: Client, p: AirdropParams): TokenAirdropTran
 
   // Airdrop fee is higher than transfer because of pending-airdrop bookkeeping.
   return baseTx(tx, 30).freezeWith(client);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// SaucerSwap pool-creatie pipeline — DRIP → Emission → SaucerSwap V1
+// ════════════════════════════════════════════════════════════════════
+//
+// Drie wallets, 4 transacties, 4 Tangem-taps verspreid over 2 cards:
+//
+//   1. HBAR transfer    DRIP    →  Emission       (Card D)
+//   2. Auto-assoc       Emission (zelf-update)    (Card C)
+//   3. Approve allowance Emission → Router         (Card C)
+//   4. Add liquidity     Emission → Router (V1)    (Card C)
+//
+// De helper `baseTxWithPayer` overschrijft de fee-payer (i.p.v. operator)
+// zodat elke transactie door zijn eigen wallet wordt afgerekend.
+
+const baseTxWithPayer = <T extends { setTransactionId: any; setNodeAccountIds: any; setMaxTransactionFee: any }>(
+  tx: T,
+  payer: AccountId,
+  hbar = 5,
+): T => {
+  tx.setTransactionId(TransactionId.generate(payer));
+  tx.setNodeAccountIds(SINGLE_NODE);
+  tx.setMaxTransactionFee(new Hbar(hbar));
+  return tx;
+};
+
+// ─── 1. HBAR-transfer (DRIP → Emission) ─────────────────────────────
+
+export interface HbarTransferParams {
+  from: string;             // bv. ACCOUNTS.drip.toString()
+  to: string;               // bv. ACCOUNTS.emission.toString()
+  hbarAmount: number;       // in hele HBAR (bv. 2000 = 2000 HBAR)
+}
+
+export function buildHbarTransfer(client: Client, p: HbarTransferParams): TransferTransaction {
+  const from = AccountId.fromString(p.from);
+  const to = AccountId.fromString(p.to);
+  const amt = new Hbar(p.hbarAmount);
+
+  const tx = new TransferTransaction()
+    .addHbarTransfer(from, amt.negated())
+    .addHbarTransfer(to, amt);
+
+  // Payer = from (de signer betaalt zijn eigen fees)
+  return baseTxWithPayer(tx, from).freezeWith(client);
+}
+
+// ─── 2. AccountUpdate: max_auto_associations +1 ─────────────────────
+// SaucerSwap router stuurt LP-tokens automatisch naar de pool-maker.
+// Zonder open auto-association slot komt LP-token in een pending-airdrop.
+
+export interface EnableAutoAssocParams {
+  account: string;          // bv. ACCOUNTS.emission.toString()
+  /** Nieuw totaal aantal slots — minstens currentMaxAutoAssoc + 1.
+   *  Gebruik 1 als de wallet nooit auto-assoc had en je 1 slot wilt. */
+  newMaxAutoAssoc: number;
+}
+
+export function buildEnableAutoAssoc(client: Client, p: EnableAutoAssocParams): AccountUpdateTransaction {
+  const account = AccountId.fromString(p.account);
+  const tx = new AccountUpdateTransaction()
+    .setAccountId(account)
+    .setMaxAutomaticTokenAssociations(p.newMaxAutoAssoc);
+  return baseTxWithPayer(tx, account).freezeWith(client);
+}
+
+// ─── 3. Token-allowance: Emission → Router ──────────────────────────
+// Router mag X NØA spend van Emission Wallet om in pool te stoppen.
+
+export interface ApproveAllowanceParams {
+  tokenId: string;          // NØA: "0.0.10472006"
+  owner: string;            // ACCOUNTS.emission.toString()
+  spender: string;          // SAUCERSWAP_V1.router
+  amountBaseUnits: bigint;  // bv. 2_000_000n * 10n ** 7n voor 2M NØA bij decimals=7
+}
+
+export function buildApproveAllowance(
+  client: Client,
+  p: ApproveAllowanceParams,
+): AccountAllowanceApproveTransaction {
+  const tokenId = TokenId.fromString(p.tokenId);
+  const owner = AccountId.fromString(p.owner);
+  const spender = AccountId.fromString(p.spender);
+
+  const tx = new AccountAllowanceApproveTransaction()
+    .approveTokenAllowance(tokenId, owner, spender, p.amountBaseUnits);
+
+  return baseTxWithPayer(tx, owner).freezeWith(client);
+}
+
+// ─── 4. SaucerSwap V1 addLiquidityETHNewPool ────────────────────────
+// Creates a new HBAR/Token pair + adds initial liquidity in one call.
+// First-time pool — requires extra pool-creation fee (default 50 HBAR).
+
+export interface AddLiquidityNewPoolParams {
+  tokenId: string;            // NØA: "0.0.10472006"
+  poolMaker: string;          // signer + fee-payer (Emission Wallet)
+  lpRecipient: string;        // wie de LP-tokens ontvangt — typisch DRIP Fund
+  tokenAmountBaseUnits: bigint;
+  tokenAmountMin: bigint;     // slippage protection (bv. 99% of desired)
+  hbarLiquidity: number;       // HBAR voor liquidity (hele HBAR, bv. 2000)
+  hbarMin: number;             // slippage protection on HBAR side
+  poolCreationFee: number;     // extra HBAR voor first-time pool (default 50)
+  deadlineSeconds: number;     // unix-timestamp seconden
+}
+
+export function buildAddLiquidityNewPool(
+  client: Client,
+  p: AddLiquidityNewPoolParams,
+): ContractExecuteTransaction {
+  const tokenAddr = TokenId.fromString(p.tokenId).toSolidityAddress();
+  const lpRecipientAddr = AccountId.fromString(p.lpRecipient).toSolidityAddress();
+
+  const params = new ContractFunctionParameters()
+    .addAddress(tokenAddr)
+    .addUint256(bigIntToLong(p.tokenAmountBaseUnits))
+    .addUint256(bigIntToLong(p.tokenAmountMin))
+    .addUint256(bigIntToLong(BigInt(p.hbarMin) * 100_000_000n))  // hbar → tinybars
+    .addAddress(lpRecipientAddr)   // ← LP-tokens gaan hierheen (DRIP Fund)
+    .addUint256(bigIntToLong(BigInt(p.deadlineSeconds)));
+
+  const totalPayable = p.hbarLiquidity + p.poolCreationFee;
+
+  const tx = new ContractExecuteTransaction()
+    .setContractId(ContractId.fromString(SAUCERSWAP_V1.router))
+    .setFunction("addLiquidityETHNewPool", params)
+    .setPayableAmount(new Hbar(totalPayable))
+    .setGas(3_200_000);
+
+  return baseTxWithPayer(tx, AccountId.fromString(p.poolMaker), 50).freezeWith(client);
 }

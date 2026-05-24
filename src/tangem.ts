@@ -2,6 +2,13 @@ import RNTangemSdk from "tangem-sdk-react-native";
 
 const cardIdByWallet = new Map<string, string>();
 
+/**
+ * Default curve for Hedera HD-wallet derivation.
+ * Tangem cards holding Hedera (HBAR/HTS) accounts use SLIP-0010 hardened
+ * ED25519 derivation, exposed by the SDK as the `ed25519_slip0010` curve.
+ */
+const HEDERA_CURVE = "ed25519_slip0010" as const;
+
 export interface TangemWalletInfo {
   cardId: string;
   walletPublicKey: string;
@@ -14,14 +21,46 @@ export interface TangemWalletInfo {
  * Can be called multiple times — once per card if the user has separate
  * cards for treasury vs. fee collector.
  */
-async function ensureSession() {
+async function ensureSession(opts?: {
+  defaultDerivationPaths?: Record<string, string[]>;
+}) {
   try {
-    await (RNTangemSdk as any).startSession?.({
-      attestationMode: "offline",
-    });
+    const startOpts: any = { attestationMode: "offline" };
+    if (opts?.defaultDerivationPaths) {
+      startOpts.defaultDerivationPaths = opts.defaultDerivationPaths;
+    }
+    await (RNTangemSdk as any).startSession?.(startOpts);
   } catch (_) {
-    // Already running or unsupported in this SDK version — proceed anyway
+    // Already running or unsupported in this SDK version — proceed anyway.
+    // Note: startSession can only be called once per app lifetime, so if a
+    // previous call set the wrong derivationPaths we need stopSession first.
+    // The discover-flow does that explicitly via restartSessionWithPaths().
   }
+}
+
+/**
+ * Force-restart the NFC session with a fresh defaultDerivationPaths config.
+ * Required for discovery because startSession's config is sticky — calling
+ * it twice without stopSession in between has no effect on the 2nd call.
+ *
+ * Errors during stopSession are tolerated (typically "ALREADY_STOPPED" — fine).
+ * Errors during startSession bubble up so the caller can show a UI error.
+ */
+async function restartSessionWithPaths(paths: Record<string, string[]>) {
+  try {
+    await (RNTangemSdk as any).stopSession?.();
+  } catch (e: any) {
+    // Expected: "ALREADY_STOPPED" if session was never started.
+    // Unexpected codes are logged so we can debug NFC-reader issues in dev builds.
+    if (e?.code && e.code !== "ALREADY_STOPPED") {
+      // eslint-disable-next-line no-console
+      console.warn("[tangem] stopSession unexpected error:", e?.code, e?.message);
+    }
+  }
+  await (RNTangemSdk as any).startSession?.({
+    attestationMode: "offline",
+    defaultDerivationPaths: paths,
+  });
 }
 
 export async function scanCard(): Promise<TangemWalletInfo[]> {
@@ -93,6 +132,137 @@ export async function scanCardForRole(role: string): Promise<RoleWallet> {
 
 export function getRoleWallet(role: string): RoleWallet | undefined {
   return roleWallets.get(role);
+}
+
+/**
+ * Discovery: scan een Tangem-card en geef alle wallet-keys + derived keys terug.
+ * Wordt gebruikt door DiscoverScreen om derivation-paths naar account-IDs te mappen
+ * via Mirror Node.
+ */
+export interface DiscoveryWallet {
+  cardId: string;
+  rootPublicKey: string;       // master pubkey van de SLIP-0010 wallet
+  curve: string;
+  derivedKeys: Array<{
+    index: number;
+    publicKey: string;
+    chainCode?: string;
+    path?: string;   // gevuld wanneer SDK Map-shape retourneert (path = key)
+  }>;
+}
+
+/**
+ * Normaliseer de derivedKeys-veld dat de Tangem-SDK terugstuurt.
+ * Verschillende SDK-versies retourneren dit veld als:
+ *   - Array<{publicKey, chainCode}>
+ *   - Object { "<path>": {publicKey, chainCode} } (= Map-stijl)
+ *   - Object met derivedKey-object-shape
+ *   - undefined / null / leeg
+ * Deze helper geeft altijd een array terug met optioneel pad-info.
+ */
+function normalizeDerivedKeys(raw: any): Array<{
+  index: number;
+  publicKey: string;
+  chainCode?: string;
+  path?: string;
+}> {
+  if (!raw) return [];
+
+  // Array-formaat
+  if (Array.isArray(raw)) {
+    return raw.map((dk: any, idx: number) => ({
+      index: idx,
+      publicKey: dk?.publicKey ?? "",
+      chainCode: dk?.chainCode,
+    }));
+  }
+
+  // Object-formaat (Map-stijl, met paths als keys)
+  if (typeof raw === "object") {
+    const entries = Object.entries(raw);
+    return entries.map(([path, dk]: [string, any], idx: number) => ({
+      index: idx,
+      path,
+      publicKey: dk?.publicKey ?? dk?.extendedPublicKey?.publicKey ?? "",
+      chainCode: dk?.chainCode ?? dk?.extendedPublicKey?.chainCode,
+    })).filter((dk) => dk.publicKey);
+  }
+
+  return [];
+}
+
+/**
+ * Scan card en derive alle Hedera-paths in één tap.
+ *
+ * Werkt via de patched native bridge (zie patches/tangem-sdk-react-native+3.1.0.patch):
+ * we configureren `defaultDerivationPaths` op `ed25519_slip0010` (Hedera's curve)
+ * vóór de scan. De card derived dan alle paden tijdens de NFC-sessie en geeft
+ * ze terug in `card.wallets[].derivedKeys`.
+ *
+ * @param paths Lijst van BIP-44 paden om te deriven. Default: `m/44'/3030'/0'/0'/0..15'`.
+ */
+export async function scanCardForDiscovery(
+  paths: string[] = defaultHederaPaths(16),
+): Promise<DiscoveryWallet[]> {
+  // Force-restart session zodat de nieuwe config zeker wordt toegepast,
+  // ook al was er al een sessie gestart zonder paths.
+  await restartSessionWithPaths({ [HEDERA_CURVE]: paths });
+
+  const card: any = await RNTangemSdk.scanCard();
+
+  // Debug-log: laat de runtime-shape van card.wallets zien
+  // eslint-disable-next-line no-console
+  console.log(
+    "[discovery] raw card.wallets:",
+    JSON.stringify(card.wallets, null, 2)?.substring(0, 1200),
+  );
+
+  const result: DiscoveryWallet[] = [];
+  for (const w of card.wallets ?? []) {
+    const wallet: any = w;
+    const derived = normalizeDerivedKeys(wallet.derivedKeys);
+    result.push({
+      cardId: card.cardId,
+      rootPublicKey: wallet.publicKey,
+      curve: wallet.curve,
+      derivedKeys: derived,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Sign een vaste test-hash met een specifieke derivation path.
+ * Gebruikt door verify-via-sign discovery: we signen test-bytes, dan
+ * controleren we welke known pubkey de signature kan verifiëren.
+ *
+ * @param cardId       NLP-card ID (bv "AF99008300018041")
+ * @param rootPubKey   Master pubkey van de SLIP-0010 wallet op de card
+ * @param derivationPath  bv "m/44'/3030'/0'/0'/0'"
+ * @param testHashHex  32-byte hash hex (zelfde voor alle paden in 1 sessie)
+ */
+export async function signForDiscovery(
+  cardId: string,
+  rootPubKey: string,
+  derivationPath: string,
+  testHashHex: string,
+): Promise<Uint8Array> {
+  const result: { signatures: string[] } = await RNTangemSdk.sign({
+    cardId,
+    walletPublicKey: rootPubKey,
+    hashes: [testHashHex],
+    derivationPath,
+  } as any);
+  if (!result.signatures?.[0]) {
+    throw new Error("Tangem returned no signature");
+  }
+  return hexToBytes(result.signatures[0]);
+}
+
+/** Standaard Hedera-paden 0..n-1 voor BIP-44 derivation */
+export function defaultHederaPaths(count = 16): string[] {
+  return Array.from({ length: count }, (_, i) => `m/44'/3030'/0'/0'/${i}'`);
 }
 
 /**

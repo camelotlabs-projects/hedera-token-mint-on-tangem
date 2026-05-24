@@ -63,6 +63,7 @@ export function ManageScreen({
   const [updateName, setUpdateName] = useState("");
   const [updateSymbol, setUpdateSymbol] = useState("");
   const [updateMemo, setUpdateMemo] = useState("");
+  const [updateMetadataHex, setUpdateMetadataHex] = useState("");
   const [removeKeys, setRemoveKeys] = useState<Record<RemovableKey, boolean>>({
     kyc: false,
     wipe: false,
@@ -244,10 +245,26 @@ export function ManageScreen({
         }
         case "update": {
           const removeList = (Object.keys(removeKeys) as RemovableKey[]).filter((k) => removeKeys[k]);
+          // Parse metadata hex (optional) — strip 0x prefix, spaces, line-breaks
+          let metadataBytes: Uint8Array | undefined;
+          const hexClean = updateMetadataHex.trim().replace(/^0x/i, "").replace(/[\s:_-]/g, "");
+          if (hexClean.length > 0) {
+            if (!/^[0-9a-fA-F]+$/.test(hexClean) || hexClean.length % 2 !== 0) {
+              throw new Error("Metadata: invalid hex (use raw hex, e.g. SHA-256 = 64 chars)");
+            }
+            if (hexClean.length / 2 > 100) {
+              throw new Error("Metadata: max 100 bytes (200 hex chars). SHA-256 = 32 bytes / 64 chars is ideal");
+            }
+            metadataBytes = new Uint8Array(hexClean.length / 2);
+            for (let i = 0; i < hexClean.length; i += 2) {
+              metadataBytes[i / 2] = parseInt(hexClean.substring(i, i + 2), 16);
+            }
+          }
           if (
             !updateName.trim() &&
             !updateSymbol.trim() &&
             !updateMemo.trim() &&
+            !metadataBytes &&
             removeList.length === 0
           ) {
             throw new Error("Provide at least one field to update or a key to remove");
@@ -256,7 +273,10 @@ export function ManageScreen({
             tokenId: id,
             name: updateName,
             symbol: updateSymbol,
-            memo: updateMemo,
+            // Memo: alleen meesturen als het veld iets bevat — anders overschrijft een lege string
+            // de bestaande memo on-chain. Trim om witregels te negeren.
+            memo: updateMemo.trim() ? updateMemo : undefined,
+            metadata: metadataBytes,
             removeKeys: removeList,
           });
           break;
@@ -637,6 +657,14 @@ export function ManageScreen({
             <Input label="New name" value={updateName} onChangeText={setUpdateName} placeholder="(unchanged if empty)" />
             <Input label="New symbol" value={updateSymbol} onChangeText={setUpdateSymbol} placeholder="(unchanged if empty)" autoCapitalize="characters" />
             <Input label="Memo" value={updateMemo} onChangeText={setUpdateMemo} placeholder="(unchanged if empty)" />
+            <Input
+              label="Metadata (hex — optional, e.g. SHA-256 hash of JSON, 64 chars)"
+              value={updateMetadataHex}
+              onChangeText={setUpdateMetadataHex}
+              placeholder="(unchanged if empty)"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
 
             <View style={styles.removeBlock}>
               <Banner
