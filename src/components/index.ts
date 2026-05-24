@@ -5,3 +5,4 @@ export { Radio, Checkbox } from "./Toggle";
 export { StepBadge } from "./StepBadge";
 export { Banner } from "./Banner";
 export { KV } from "./KV";
+export { QrScanner } from "./QrScanner";

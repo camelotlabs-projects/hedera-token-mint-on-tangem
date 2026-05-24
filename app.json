@@ -11,6 +11,7 @@
       "supportsTablet": false,
       "infoPlist": {
         "NFCReaderUsageDescription": "Tap your Tangem card to sign Hedera token-create transactions.",
+        "NSCameraUsageDescription": "Scan WalletConnect QR codes from dapps like SaucerSwap.",
         "com.apple.developer.nfc.readersession.iso7816.select-identifiers": [
           "A000000812010101",
           "A000000812010208",
@@ -28,7 +29,13 @@
     },
     "plugins": [
       "expo-dev-client",
-      "./plugins/with-tangem-modulemap-fix"
+      "./plugins/with-tangem-modulemap-fix",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan WalletConnect QR codes from dapps."
+        }
+      ]
     ]
   }
 }

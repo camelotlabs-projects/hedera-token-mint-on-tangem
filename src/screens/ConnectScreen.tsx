@@ -22,6 +22,7 @@ import {
   Input,
   KV,
   PrimaryButton,
+  QrScanner,
   Section,
 } from "../components";
 import { palette, spacing, type } from "../theme";
@@ -49,6 +50,7 @@ export function ConnectScreen({ appendLog }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [emissionScanned, setEmissionScanned] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
 
   const refresh = () => setSessions(listSessions());
 
@@ -86,15 +88,15 @@ export function ConnectScreen({ appendLog }: Props) {
     }
   };
 
-  const onPair = async () => {
-    if (!uri.trim().startsWith("wc:")) {
+  const doPair = async (rawUri: string) => {
+    if (!rawUri.trim().startsWith("wc:")) {
       setError("Paste a wc:... URI from the dapp's WalletConnect QR.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await pair(uri.trim());
+      await pair(rawUri.trim());
       appendLog("ok", `Paired with dapp via WalletConnect`);
       setUri("");
       refresh();
@@ -104,6 +106,18 @@ export function ConnectScreen({ appendLog }: Props) {
       appendLog("err", msg);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onPair = () => doPair(uri);
+
+  const onScanResult = (data: string) => {
+    setScannerVisible(false);
+    setUri(data);
+    // Auto-pair the moment we capture a wc:... uri so the user doesn't
+    // need to tap "Pair" after the scan.
+    if (data.startsWith("wc:")) {
+      doPair(data);
     }
   };
 
@@ -164,7 +178,7 @@ export function ConnectScreen({ appendLog }: Props) {
         )}
         <Input
           label="WalletConnect URI"
-          hint="Open SaucerSwap → WalletConnect → tap 'Copy to clipboard' next to the QR, then paste here."
+          hint="Scan the dapp's WalletConnect QR, or paste a wc:... URI manually."
           value={uri}
           onChangeText={setUri}
           placeholder="wc:...@2?relay-protocol=irn&symKey=..."
@@ -173,10 +187,21 @@ export function ConnectScreen({ appendLog }: Props) {
           multiline
         />
         <PrimaryButton
-          label={busy ? "Pairing…" : "Pair"}
+          label="Scan QR"
+          onPress={() => setScannerVisible(true)}
+          disabled={busy || !initialized || !emissionScanned}
+        />
+        <View style={{ height: spacing.sm }} />
+        <PrimaryButton
+          label={busy ? "Pairing…" : "Pair from URI"}
           onPress={onPair}
           disabled={busy || !initialized || !emissionScanned || !uri.trim()}
           loading={busy}
+        />
+        <QrScanner
+          visible={scannerVisible}
+          onClose={() => setScannerVisible(false)}
+          onScan={onScanResult}
         />
         {error && (
           <View style={{ marginTop: spacing.md }}>
