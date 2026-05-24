@@ -196,8 +196,10 @@ async function onSessionRequest(event: any): Promise<void> {
   const { id, topic, params } = event;
   const { request, chainId } = params;
   const method = request.method as HederaJsonRpcMethod;
+  console.log("[WC] session_request", { method, paramKeys: Object.keys(request.params ?? {}) });
 
   const respondError = async (code: number, message: string) => {
+    console.log("[WC] respondError", { code, message });
     await wallet!.respondSessionRequest({
       topic,
       response: { id, jsonrpc: "2.0", error: { code, message } },
@@ -207,10 +209,15 @@ async function onSessionRequest(event: any): Promise<void> {
   try {
     switch (method) {
       case HederaJsonRpcMethod.SignAndExecuteTransaction: {
+        console.log("[WC] SignAndExecute: deserializing tx");
         const tx = base64StringToTransaction(request.params.transactionList);
+        console.log("[WC] tx type:", tx.constructor.name, "isFrozen:", (tx as any).isFrozen?.());
+        console.log("[WC] requesting Tangem sign…");
         await tangemSignTx(tx);
+        console.log("[WC] Tangem sign returned, executing…");
         const client = makeClientForConnected();
         const resp = await tx.execute(client);
+        console.log("[WC] execute returned txId:", resp.transactionId.toString());
         // Match the Hedera-wallet-connect library's response shape exactly:
         // TransactionResponse.toJSON() — the dapp deserializes this back into
         // a TransactionResponse to fetch the receipt itself. A bespoke object
@@ -228,11 +235,20 @@ async function onSessionRequest(event: any): Promise<void> {
         break;
       }
       case HederaJsonRpcMethod.SignTransaction: {
-        // Body is a TransactionBody protobuf (Uint8Array) per HIP-820.
+        // HIP-820 names the param `transactionBody`. Older / off-spec dapps
+        // sometimes send `body` or `transactionList`; accept all three so
+        // a misformatted request can't silently produce an empty signature
+        // and surface as a phantom "user cancelled".
+        const raw =
+          request.params.transactionBody ??
+          request.params.body ??
+          request.params.transactionList;
+        if (!raw) {
+          await respondError(5000, "SignTransaction missing transactionBody param");
+          return;
+        }
         const bodyBytes: Uint8Array =
-          typeof request.params.body === "string"
-            ? Buffer.from(request.params.body, "base64")
-            : request.params.body;
+          typeof raw === "string" ? Buffer.from(raw, "base64") : raw;
         const sigBytes = await signForRole(
           CONNECTED_ROLE,
           HEDERA_DERIVATION_PATH,
@@ -275,6 +291,7 @@ async function onSessionRequest(event: any): Promise<void> {
         return;
     }
   } catch (e) {
+    console.log("[WC] handler caught error:", (e as Error).message, (e as any).stack);
     await respondError(5000, (e as Error).message);
   }
   wcEmit();
