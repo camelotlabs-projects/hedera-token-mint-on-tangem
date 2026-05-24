@@ -19,7 +19,44 @@
 const g: any = globalThis;
 
 if (typeof g.window === "undefined") g.window = g;
-if (typeof g.document === "undefined") g.document = {};
+
+// Minimal Document stub — covers the methods @walletconnect/modal calls
+// during module eval (head/body insertion for styles + meta tags).
+if (typeof g.document === "undefined" || typeof g.document.createElement !== "function") {
+  const noopEl: any = {
+    setAttribute: () => {},
+    appendChild: () => noopEl,
+    removeChild: () => {},
+    insertBefore: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    style: {},
+    children: [],
+    childNodes: [],
+    parentNode: null,
+    innerHTML: "",
+    innerText: "",
+    classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => {} },
+    getElementsByTagName: () => [],
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  g.document = {
+    createElement: () => ({ ...noopEl }),
+    createElementNS: () => ({ ...noopEl }),
+    createTextNode: () => ({ ...noopEl }),
+    getElementById: () => null,
+    getElementsByTagName: () => [],
+    getElementsByClassName: () => [],
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    head: noopEl,
+    body: noopEl,
+    documentElement: noopEl,
+  };
+}
 
 const win: any = g.window;
 
