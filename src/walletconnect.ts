@@ -18,7 +18,7 @@
  *      will offer a per-session account picker over all configured roles.
  */
 
-import { AccountId, Client, PrivateKey, SignerSignature, Transaction } from "@hashgraph/sdk";
+import { AccountId, Client, SignerSignature, Transaction } from "@hashgraph/sdk";
 import { Web3Wallet, type IWeb3Wallet } from "@walletconnect/web3wallet";
 import { Core } from "@walletconnect/core";
 import {
@@ -174,10 +174,13 @@ async function onSessionProposal(event: any): Promise<void> {
  * sign (e.g. running a query), it'll fail loudly and we can revisit.
  */
 function makeClientForConnected(): Client {
-  const c = NETWORK === "mainnet" ? Client.forMainnet() : Client.forTestnet();
-  const dummy = PrivateKey.generateED25519();
-  c.setOperator(ACCOUNTS.emission, dummy);
-  return c;
+  // No setOperator. The transaction body the dapp sends already specifies
+  // payer = emission and is signed by Tangem; auto-signing again with a
+  // dummy ED25519 key here only adds an unwanted second signature on the
+  // SignatureMap. Worse, with some SDK versions the second attempt
+  // triggers another Tangem NFC interaction the user never expects and
+  // returns "user cancelled" if dismissed.
+  return NETWORK === "mainnet" ? Client.forMainnet() : Client.forTestnet();
 }
 
 async function tangemSignTx(tx: Transaction): Promise<Transaction> {
