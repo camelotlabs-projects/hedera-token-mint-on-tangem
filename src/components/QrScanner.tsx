@@ -77,7 +77,7 @@ export function QrScanner({ visible, onClose, onScan }: Props) {
               onBarcodeScanned={
                 scanned
                   ? undefined
-                  : ({ data }) => {
+                  : ({ data }: { data: string }) => {
                       setScanned(true);
                       onScan(data);
                     }
