@@ -202,20 +202,46 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
   if (!Array.isArray(list) || list.length === 0) {
     throw new Error("tx._signedTransactions is empty — can't extract body");
   }
-  console.log("[WC] reducing", list.length, "variants to 1 for single-tap sign");
 
-  // 1. Reduce to variant [0] across every parallel bookkeeping array
-  //    the SDK indexes by node — keeps the lock-step intact.
-  const trimToOne = (arr: any) => {
+  const nodeIdsRaw: any = (tx as any)._nodeAccountIds;
+  const nodeIds: any[] = nodeIdsRaw?.list ?? nodeIdsRaw?._list ?? nodeIdsRaw ?? [];
+  if (nodeIds.length !== list.length) {
+    throw new Error(`node id list (${nodeIds.length}) and signed-tx list (${list.length}) out of sync`);
+  }
+
+  // Find a variant whose node is on our trust list. Hedera mainnet's
+  // founding nodes (0.0.3 .. 0.0.10) have far better uptime than the
+  // later-added council nodes; the dapp picks 30 random nodes for the
+  // failover list and sometimes the first slot is one of the flakier
+  // ones (we hit "All nodes are unhealthy" on 0.0.32). Walk the
+  // variants and keep the first founding node we see.
+  const TRUSTED = new Set(["0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7", "0.0.8", "0.0.9", "0.0.10"]);
+  let chosenIdx = 0;
+  for (let i = 0; i < nodeIds.length; i++) {
+    const id = nodeIds[i]?.toString?.() ?? String(nodeIds[i]);
+    if (TRUSTED.has(id)) {
+      chosenIdx = i;
+      break;
+    }
+  }
+  const chosenNode = nodeIds[chosenIdx]?.toString?.() ?? String(nodeIds[chosenIdx]);
+  console.log(`[WC] reducing ${list.length} variants to 1 — picking idx ${chosenIdx} (node ${chosenNode})`);
+
+  // 1. Keep only the chosen variant across every parallel bookkeeping
+  //    array the SDK indexes by node — keeps the lock-step intact.
+  const keepOnly = (arr: any, idx: number) => {
     if (!arr) return;
     const target = arr.list ?? arr._list ?? arr;
-    if (Array.isArray(target) && target.length > 1) target.length = 1;
+    if (!Array.isArray(target) || target.length <= 1) return;
+    const survivor = target[idx];
+    target.length = 0;
+    target.push(survivor);
   };
-  trimToOne((tx as any)._signedTransactions);
-  trimToOne((tx as any)._transactions);
-  trimToOne((tx as any)._transactionIds);
-  trimToOne((tx as any)._nodeAccountIds);
-  trimToOne((tx as any)._signerPublicKeys);
+  keepOnly((tx as any)._signedTransactions, chosenIdx);
+  keepOnly((tx as any)._transactions, chosenIdx);
+  keepOnly((tx as any)._transactionIds, chosenIdx);
+  keepOnly((tx as any)._nodeAccountIds, chosenIdx);
+  keepOnly((tx as any)._signerPublicKeys, chosenIdx);
 
   // 2. Sign the surviving body in a single Tangem tap.
   const survivor = list[0];
