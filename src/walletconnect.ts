@@ -229,13 +229,20 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
   // failover list and sometimes the first slot is one of the flakier
   // ones (we hit "All nodes are unhealthy" on 0.0.32). Walk the
   // variants and keep the first founding node we see.
-  const TRUSTED = new Set(["0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7", "0.0.8", "0.0.9", "0.0.10"]);
+  // Prefer historically-reliable founding nodes, in roughly-decreasing
+  // uptime order from HashScan data. 0.0.6 sits at the back after Steve
+  // hit a fresh "all nodes unhealthy" against it; keep it as a last
+  // resort. Walk the preference list and pick the first one that's
+  // actually in the dapp's variant list.
+  const PREFERRED = ["0.0.3", "0.0.5", "0.0.4", "0.0.8", "0.0.9", "0.0.10", "0.0.7", "0.0.6"];
+  const idStr = (i: number) => nodeIds[i]?.toString?.() ?? String(nodeIds[i]);
   let chosenIdx = 0;
-  for (let i = 0; i < nodeIds.length; i++) {
-    const id = nodeIds[i]?.toString?.() ?? String(nodeIds[i]);
-    if (TRUSTED.has(id)) {
-      chosenIdx = i;
-      break;
+  outer: for (const pref of PREFERRED) {
+    for (let i = 0; i < nodeIds.length; i++) {
+      if (idStr(i) === pref) {
+        chosenIdx = i;
+        break outer;
+      }
     }
   }
   const chosenNode = nodeIds[chosenIdx]?.toString?.() ?? String(nodeIds[chosenIdx]);
