@@ -75,16 +75,28 @@ const CONNECTED_ROLE = "emission";
  * one that matches. The match is cached for the rest of the session so
  * subsequent signs are single-tap.
  */
-const CANDIDATE_PATHS = [
-  "m/44'/3030'/0'/0'/0'",
-  "m/44'/3030'/1'/0'/0'",
-  "m/44'/3030'/2'/0'/0'",
-  "m/44'/3030'/3'/0'/0'",
-  "m/44'/3030'/0'/0'/1'",
-  "m/44'/3030'/0'/0'/2'",
-  "m/44'/3030'/0'/1'/0'",
-  "m/44'/3030'/0'",
-];
+const CANDIDATE_PATHS = (() => {
+  const out: string[] = [];
+  // Iterate the BIP-44 account index — Tangem's default Hedera scheme
+  // for new wallets on the same card.
+  for (let a = 0; a <= 15; a++) {
+    out.push(`m/44'/3030'/${a}'/0'/0'`);
+  }
+  // Iterate the address index, in case wallets were created via index
+  // rotation instead of account rotation.
+  for (let i = 1; i <= 15; i++) {
+    out.push(`m/44'/3030'/0'/0'/${i}'`);
+  }
+  // Short variants — sometimes Tangem uses these.
+  for (let a = 0; a <= 7; a++) {
+    out.push(`m/44'/3030'/${a}'`);
+  }
+  // Change-level rotation, less likely but cheap to try.
+  for (let c = 1; c <= 3; c++) {
+    out.push(`m/44'/3030'/0'/${c}'/0'`);
+  }
+  return out;
+})();
 
 let resolvedPath: string | null = null;
 
