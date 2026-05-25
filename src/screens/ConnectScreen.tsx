@@ -134,6 +134,27 @@ export function ConnectScreen({ appendLog }: Props) {
     }
   };
 
+  const onListWallets = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      appendLog("info", "Tap card to enumerate ALL wallets (any curve)…");
+      const card: any = await (RNTangemSdk as any).scanCard();
+      const wallets = card?.wallets ?? [];
+      appendLog("ok", `cardId: ${card?.cardId}`);
+      appendLog("ok", `Card has ${wallets.length} wallet(s):`);
+      wallets.forEach((w: any, i: number) => {
+        appendLog("ok", `  [${i}] ${w.curve}  pub=${w.publicKey}`);
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      setError(msg);
+      appendLog("err", msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doPair = async (rawUri: string) => {
     if (!rawUri.trim().startsWith("wc:")) {
       setError("Paste a wc:... URI from the dapp's WalletConnect QR.");
@@ -213,6 +234,12 @@ export function ConnectScreen({ appendLog }: Props) {
             <GhostButton
               label="Verify sign (debug)"
               onPress={onVerifyEmissionSign}
+              disabled={busy}
+            />
+            <View style={{ height: spacing.sm }} />
+            <GhostButton
+              label="List all wallets on card (debug)"
+              onPress={onListWallets}
               disabled={busy}
             />
           </>
