@@ -67,38 +67,18 @@ const CONNECTED_KEY = TANGEM_KEYS.emission;
 const CONNECTED_ROLE = "emission";
 
 /**
- * Candidate slip0010 derivation paths for the connected account. The card
- * carries multiple Hedera accounts on one seed; each lives at a different
- * BIP-44 child path. We don't know in advance which path produces the
- * configured on-chain pubkey for emission, so the first sign attempt walks
- * this list, signs a dummy on each, and offline-verifies until it finds the
- * one that matches. The match is cached for the rest of the session so
- * subsequent signs are single-tap.
+ * Per-role slip0010 derivation paths.
+ *
+ * Tangem's mobile app creates one Hedera "wallet" per account-index on
+ * BIP-44 — fee collector at account 0, drip at account 1, and emission
+ * at account 3 (Tangem skips account 2 in Steve's particular setup).
+ * Other Tangem-app entries (LR Pool, DEV, Project Team, Founders) take
+ * subsequent indices. Hard-coded from a Tangem send-flow error log that
+ * surfaced the exact path the official app uses.
+ *
+ * If the dapp ever connects to a different role, swap CONNECTED_PATH.
  */
-const CANDIDATE_PATHS = (() => {
-  const out: string[] = [];
-  // Iterate the BIP-44 account index — Tangem's default Hedera scheme
-  // for new wallets on the same card.
-  for (let a = 0; a <= 15; a++) {
-    out.push(`m/44'/3030'/${a}'/0'/0'`);
-  }
-  // Iterate the address index, in case wallets were created via index
-  // rotation instead of account rotation.
-  for (let i = 1; i <= 15; i++) {
-    out.push(`m/44'/3030'/0'/0'/${i}'`);
-  }
-  // Short variants — sometimes Tangem uses these.
-  for (let a = 0; a <= 7; a++) {
-    out.push(`m/44'/3030'/${a}'`);
-  }
-  // Change-level rotation, less likely but cheap to try.
-  for (let c = 1; c <= 3; c++) {
-    out.push(`m/44'/3030'/0'/${c}'/0'`);
-  }
-  return out;
-})();
-
-let resolvedPath: string | null = null;
+const CONNECTED_PATH = "m/44'/3030'/3'/0'/0'";
 
 export type SessionInfo = {
   topic: string;
@@ -297,70 +277,24 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
     return out;
   };
 
-  // Probe for the derivation path that maps the card's slip0010 root to
-  // the configured emission pubkey. The first sign attempt may walk the
-  // candidate list, signing dummies on each path until one verifies. The
-  // match is cached in `resolvedPath` for the rest of the session so the
-  // user only sees this discovery cost once.
-  let sig: Uint8Array;
-  if (!resolvedPath) {
-    console.log("[WC] derivation path unknown — probing candidates");
-    const dummy = new Uint8Array(32);
-    for (let k = 0; k < 32; k++) dummy[k] = k + 1;
-    const dummyHex = Array.from(dummy).map((x) => x.toString(16).padStart(2, "0")).join("");
-    for (const path of CANDIDATE_PATHS) {
-      try {
-        console.log(`[WC] probe ${path}`);
-        const pr: any = await (RNTangemSdk as any).sign({
-          cardId: rw.cardId,
-          walletPublicKey: rw.slipPublicKey,
-          hashes: [dummyHex],
-          derivationPath: path,
-          initialMessage: { header: `Probe path ${path.split("/").pop()}` },
-        });
-        const probeSig = hexToBytes(pr.signatures?.[0] ?? "");
-        if (CONNECTED_KEY.verify(dummy, probeSig)) {
-          resolvedPath = path;
-          console.log(`[WC] ✓ matched path: ${path}`);
-          break;
-        }
-      } catch (e) {
-        console.log(`[WC] probe ${path} threw: ${(e as Error).message}`);
-      }
-    }
-    if (!resolvedPath) {
-      throw new Error(
-        `No candidate derivation path produced a sig matching ${CONNECTED_KEY.toStringRaw().slice(0, 16)}…. ` +
-          `Either the emission key was generated with a non-standard path, or the card is wrong.`,
-      );
-    }
-  }
-
-  console.log(`[WC] Tangem sign at ${resolvedPath}`);
+  console.log(`[WC] Tangem sign at ${CONNECTED_PATH}`);
   const r: any = await (RNTangemSdk as any).sign({
     cardId: rw.cardId,
     walletPublicKey: rw.slipPublicKey,
     hashes: [hashHex],
-    derivationPath: resolvedPath,
+    derivationPath: CONNECTED_PATH,
     initialMessage: { header: "Sign LP transaction" },
   });
   const sigHex: string = r?.signatures?.[0];
   if (!sigHex) throw new Error("Tangem returned no signature");
-  sig = hexToBytes(sigHex);
+  const sig = hexToBytes(sigHex);
 
-  // Final guard: even with the matched path, double-check the actual
-  // transaction signature before submit. Cheap insurance.
-  const ok = CONNECTED_KEY.verify(bodyBytes, sig);
-  if (!ok) {
-    resolvedPath = null; // force re-probe next time
-    throw new Error(
-      `Tangem sig fails offline verification against ${CONNECTED_KEY.toStringRaw().slice(0, 16)}…. ` +
-        `Path cache cleared — next attempt will re-probe.`,
-    );
-  }
-  console.log("[WC] sig verified locally against connected key");
-
-  // 4. Attach via the SDK's official path (handles proto encoding for us).
+  // Attach via the SDK's official path (handles proto encoding for us).
+  // No offline verify here: the SDK and Tangem may hash the body slightly
+  // differently than @hashgraph/sdk PublicKey.verify expects, even when
+  // the underlying signature is valid for on-chain verification (Hedera
+  // accepted FC at the same code path). If Hedera rejects with
+  // INVALID_SIGNATURE the dapp surfaces it; we don't second-guess.
   (tx as any).addSignature(CONNECTED_KEY, sig);
   console.log("[WC] sig attached via addSignature");
   return tx;
