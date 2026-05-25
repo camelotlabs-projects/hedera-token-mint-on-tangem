@@ -185,91 +185,72 @@ function makeClientForConnected(): Client {
 }
 
 async function tangemSignTx(tx: Transaction): Promise<Transaction> {
-  // A Hedera dapp typically freezes its tx with the full node-account
-  // failover list (~30 variants). Each variant has its own bodyBytes
-  // (the nodeAccountId field differs) and therefore its own required
-  // signature. tx.signWith() iterates these and asks the signer once
-  // per variant — which on Tangem means one NFC tap per variant, but
-  // the user can only ever tap once before the second prompt times
-  // out.
+  // Hedera dapps freeze a tx with the full failover node list (often
+  // ~30 variants), each with its own bodyBytes (the nodeAccountID
+  // field differs). Signing all of those on a Tangem card needs 3+
+  // NFC taps because the SDK caps a single sign call at 10 hashes;
+  // multi-tap on iOS NFC is unreliable in practice (second popup
+  // intermittently times out as "user cancelled").
   //
-  // Trimming the array to 1 entry was fragile because the SDK can
-  // reconstruct from _transactions + _nodeAccountIds during execute,
-  // and the sigs end up bound to the wrong variant (INVALID_SIGNATURE
-  // against whichever node the SDK actually picked).
-  //
-  // The Hedera-correct fix: sign EVERY variant in a single Tangem tap
-  // using the SDK's batch-hash interface, then attach each signature
-  // to the matching signedTx via the public sigMap. Nothing inside
-  // the SDK gets monkey-patched; execute() then picks any node and
-  // the matching signed body is already there.
+  // The single-tap fix: keep only variant [0], sign it once, attach
+  // the signature to that one entry, and reduce the SDK's parallel
+  // bookkeeping arrays so execute() submits to that variant's node.
+  // The dapp loses node failover, but execute() succeeds on node[0]
+  // for a fresh submit — that's the path it would try first anyway.
   const inner: any = (tx as any)._signedTransactions;
   const list: any[] = inner?.list ?? inner?._list ?? (Array.isArray(inner) ? inner : []);
   if (!Array.isArray(list) || list.length === 0) {
-    throw new Error("tx._signedTransactions is empty — can't extract bodies");
+    throw new Error("tx._signedTransactions is empty — can't extract body");
   }
-  console.log("[WC] batch-signing", list.length, "node variants in one tap");
+  console.log("[WC] reducing", list.length, "variants to 1 for single-tap sign");
 
-  // 1. Collect body bytes for every variant.
-  const bodies: Uint8Array[] = list.map((st) => st.bodyBytes ?? st.body ?? new Uint8Array());
-  if (bodies.some((b) => !b || b.length === 0)) {
-    throw new Error("Some signedTransactions had no bodyBytes");
+  // 1. Reduce to variant [0] across every parallel bookkeeping array
+  //    the SDK indexes by node — keeps the lock-step intact.
+  const trimToOne = (arr: any) => {
+    if (!arr) return;
+    const target = arr.list ?? arr._list ?? arr;
+    if (Array.isArray(target) && target.length > 1) target.length = 1;
+  };
+  trimToOne((tx as any)._signedTransactions);
+  trimToOne((tx as any)._transactions);
+  trimToOne((tx as any)._transactionIds);
+  trimToOne((tx as any)._nodeAccountIds);
+  trimToOne((tx as any)._signerPublicKeys);
+
+  // 2. Sign the surviving body in a single Tangem tap.
+  const survivor = list[0];
+  const bodyBytes: Uint8Array = survivor.bodyBytes ?? survivor.body;
+  if (!bodyBytes || bodyBytes.length === 0) {
+    throw new Error("variant [0] has no bodyBytes");
   }
+  const hashHex = Array.from(bodyBytes)
+    .map((x) => x.toString(16).padStart(2, "0"))
+    .join("");
 
-  // 2. Single Tangem call signs all N hashes. Tangem caps a single sign
-  //    call at 10 hashes per the spec, so we batch in chunks of 10 —
-  //    each chunk is one NFC tap.
   const rw = getRoleWallet(CONNECTED_ROLE);
   if (!rw) throw new Error("Emission card not scanned — scan it in Setup first");
-  const CHUNK = 10;
-  const sigs: Uint8Array[] = [];
-  const totalChunks = Math.ceil(bodies.length / CHUNK);
-  for (let i = 0; i < bodies.length; i += CHUNK) {
-    const chunkIdx = i / CHUNK + 1;
-    const chunk = bodies.slice(i, i + CHUNK);
-    const hashesHex = chunk.map((b) =>
-      Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(""),
-    );
-    console.log(`[WC] Tangem chunk ${chunkIdx}/${totalChunks}: ${chunk.length} hashes — tap card`);
-    const r: any = await (RNTangemSdk as any).sign({
-      cardId: rw.cardId,
-      walletPublicKey: rw.slipPublicKey,
-      hashes: hashesHex,
-      derivationPath: HEDERA_DERIVATION_PATH,
-      initialMessage: { header: `Sign chunk ${chunkIdx} of ${totalChunks}` },
-    });
-    const chunkSigs: string[] = r?.signatures ?? [];
-    if (chunkSigs.length !== chunk.length) {
-      throw new Error(`Tangem returned ${chunkSigs.length} sigs for ${chunk.length} hashes`);
-    }
-    for (const hex of chunkSigs) {
-      const clean = hex.replace(/^0x/, "");
-      const out = new Uint8Array(clean.length / 2);
-      for (let j = 0; j < out.length; j++) out[j] = parseInt(clean.substr(j * 2, 2), 16);
-      sigs.push(out);
-    }
-    // Let the iOS NFC stack tear the previous session down before opening
-    // another one — without this the second popup is reported as "user
-    // cancelled" within a few seconds of appearing.
-    if (i + CHUNK < bodies.length) {
-      try { await (RNTangemSdk as any).stopSession?.(); } catch {}
-      await new Promise((res) => setTimeout(res, 1500));
-    }
-  }
+  console.log("[WC] Tangem sign: 1 hash — tap card");
+  const r: any = await (RNTangemSdk as any).sign({
+    cardId: rw.cardId,
+    walletPublicKey: rw.slipPublicKey,
+    hashes: [hashHex],
+    derivationPath: HEDERA_DERIVATION_PATH,
+    initialMessage: { header: "Sign LP transaction" },
+  });
+  const sigHex: string = r?.signatures?.[0];
+  if (!sigHex) throw new Error("Tangem returned no signature");
+  const clean = sigHex.replace(/^0x/, "");
+  const sig = new Uint8Array(clean.length / 2);
+  for (let j = 0; j < sig.length; j++) sig[j] = parseInt(clean.substr(j * 2, 2), 16);
 
-  // 3. Attach each signature to its corresponding signedTx's sigMap.
-  //    The protobuf shape is { sigMap: { sigPair: [{ pubKeyPrefix, ed25519 }] } }.
-  const pubKeyBytes = CONNECTED_KEY.toBytes();
-  for (let i = 0; i < list.length; i++) {
-    const st = list[i];
-    if (!st.sigMap) st.sigMap = { sigPair: [] };
-    if (!st.sigMap.sigPair) st.sigMap.sigPair = [];
-    st.sigMap.sigPair.push({
-      pubKeyPrefix: pubKeyBytes,
-      ed25519: sigs[i],
-    });
-  }
-  console.log("[WC] attached", sigs.length, "signatures");
+  // 3. Attach the signature to the surviving variant's sigMap.
+  if (!survivor.sigMap) survivor.sigMap = { sigPair: [] };
+  if (!survivor.sigMap.sigPair) survivor.sigMap.sigPair = [];
+  survivor.sigMap.sigPair.push({
+    pubKeyPrefix: CONNECTED_KEY.toBytes(),
+    ed25519: sig,
+  });
+  console.log("[WC] sig attached to variant 0");
   return tx;
 }
 
