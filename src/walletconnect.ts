@@ -223,17 +223,20 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
   if (!rw) throw new Error("Emission card not scanned — scan it in Setup first");
   const CHUNK = 10;
   const sigs: Uint8Array[] = [];
+  const totalChunks = Math.ceil(bodies.length / CHUNK);
   for (let i = 0; i < bodies.length; i += CHUNK) {
+    const chunkIdx = i / CHUNK + 1;
     const chunk = bodies.slice(i, i + CHUNK);
     const hashesHex = chunk.map((b) =>
       Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(""),
     );
-    console.log(`[WC] Tangem chunk ${i / CHUNK + 1}: ${chunk.length} hashes`);
+    console.log(`[WC] Tangem chunk ${chunkIdx}/${totalChunks}: ${chunk.length} hashes — tap card`);
     const r: any = await (RNTangemSdk as any).sign({
       cardId: rw.cardId,
       walletPublicKey: rw.slipPublicKey,
       hashes: hashesHex,
       derivationPath: HEDERA_DERIVATION_PATH,
+      initialMessage: { header: `Sign chunk ${chunkIdx} of ${totalChunks}` },
     });
     const chunkSigs: string[] = r?.signatures ?? [];
     if (chunkSigs.length !== chunk.length) {
@@ -244,6 +247,13 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
       const out = new Uint8Array(clean.length / 2);
       for (let j = 0; j < out.length; j++) out[j] = parseInt(clean.substr(j * 2, 2), 16);
       sigs.push(out);
+    }
+    // Let the iOS NFC stack tear the previous session down before opening
+    // another one — without this the second popup is reported as "user
+    // cancelled" within a few seconds of appearing.
+    if (i + CHUNK < bodies.length) {
+      try { await (RNTangemSdk as any).stopSession?.(); } catch {}
+      await new Promise((res) => setTimeout(res, 1500));
     }
   }
 
