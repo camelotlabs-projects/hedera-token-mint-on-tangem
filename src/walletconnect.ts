@@ -30,8 +30,9 @@ import {
   signerSignaturesToSignatureMap,
 } from "@hashgraph/hedera-wallet-connect";
 
+import RNTangemSdk from "tangem-sdk-react-native";
 import { ACCOUNTS, HEDERA_DERIVATION_PATH, NETWORK, TANGEM_KEYS } from "./config";
-import { signForRole } from "./tangem";
+import { getRoleWallet, signForRole } from "./tangem";
 
 // Public Reown / WalletConnect project ID. Free tier from cloud.walletconnect.com.
 // Replace with your own at deploy time; this default is a demo registration
@@ -184,33 +185,81 @@ function makeClientForConnected(): Client {
 }
 
 async function tangemSignTx(tx: Transaction): Promise<Transaction> {
-  // Hedera transactions can carry multiple SignedTransaction variants —
-  // one per node-account in the failover list. tx.signWith() calls the
-  // signer once per variant, which on Tangem means one NFC tap per
-  // variant. The user only ever taps once, the second prompt times out
-  // and the dapp sees "user cancelled" even though the first tap was
-  // successful.
+  // A Hedera dapp typically freezes its tx with the full node-account
+  // failover list (~30 variants). Each variant has its own bodyBytes
+  // (the nodeAccountId field differs) and therefore its own required
+  // signature. tx.signWith() iterates these and asks the signer once
+  // per variant — which on Tangem means one NFC tap per variant, but
+  // the user can only ever tap once before the second prompt times
+  // out.
   //
-  // Workaround: before signing, trim the internal _signedTransactions
-  // list down to the first variant. Hedera SDK's execute() picks
-  // node[0] first anyway; the failover variants are only consulted on
-  // BUSY/UNAVAILABLE which is rare for a fresh submit. One Tangem tap
-  // covers it.
+  // Trimming the array to 1 entry was fragile because the SDK can
+  // reconstruct from _transactions + _nodeAccountIds during execute,
+  // and the sigs end up bound to the wrong variant (INVALID_SIGNATURE
+  // against whichever node the SDK actually picked).
+  //
+  // The Hedera-correct fix: sign EVERY variant in a single Tangem tap
+  // using the SDK's batch-hash interface, then attach each signature
+  // to the matching signedTx via the public sigMap. Nothing inside
+  // the SDK gets monkey-patched; execute() then picks any node and
+  // the matching signed body is already there.
   const inner: any = (tx as any)._signedTransactions;
-  const list = inner?.list ?? inner?._list ?? inner;
-  if (Array.isArray(list) && list.length > 1) {
-    console.log("[WC] trimming", list.length, "signed-tx variants down to 1");
-    list.length = 1;
-    // Mirror trim on _transactions / _nodeIds / _nodeAccountIds in case the
-    // SDK reads any of these arrays in lock-step with _signedTransactions.
-    for (const k of ["_transactions", "_transactionIds", "_nodeAccountIds"]) {
-      const arr = (tx as any)[k]?.list ?? (tx as any)[k]?._list ?? (tx as any)[k];
-      if (Array.isArray(arr) && arr.length > 1) arr.length = 1;
+  const list: any[] = inner?.list ?? inner?._list ?? (Array.isArray(inner) ? inner : []);
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error("tx._signedTransactions is empty — can't extract bodies");
+  }
+  console.log("[WC] batch-signing", list.length, "node variants in one tap");
+
+  // 1. Collect body bytes for every variant.
+  const bodies: Uint8Array[] = list.map((st) => st.bodyBytes ?? st.body ?? new Uint8Array());
+  if (bodies.some((b) => !b || b.length === 0)) {
+    throw new Error("Some signedTransactions had no bodyBytes");
+  }
+
+  // 2. Single Tangem call signs all N hashes. Tangem caps a single sign
+  //    call at 10 hashes per the spec, so we batch in chunks of 10 —
+  //    each chunk is one NFC tap.
+  const rw = getRoleWallet(CONNECTED_ROLE);
+  if (!rw) throw new Error("Emission card not scanned — scan it in Setup first");
+  const CHUNK = 10;
+  const sigs: Uint8Array[] = [];
+  for (let i = 0; i < bodies.length; i += CHUNK) {
+    const chunk = bodies.slice(i, i + CHUNK);
+    const hashesHex = chunk.map((b) =>
+      Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(""),
+    );
+    console.log(`[WC] Tangem chunk ${i / CHUNK + 1}: ${chunk.length} hashes`);
+    const r: any = await (RNTangemSdk as any).sign({
+      cardId: rw.cardId,
+      walletPublicKey: rw.slipPublicKey,
+      hashes: hashesHex,
+      derivationPath: HEDERA_DERIVATION_PATH,
+    });
+    const chunkSigs: string[] = r?.signatures ?? [];
+    if (chunkSigs.length !== chunk.length) {
+      throw new Error(`Tangem returned ${chunkSigs.length} sigs for ${chunk.length} hashes`);
+    }
+    for (const hex of chunkSigs) {
+      const clean = hex.replace(/^0x/, "");
+      const out = new Uint8Array(clean.length / 2);
+      for (let j = 0; j < out.length; j++) out[j] = parseInt(clean.substr(j * 2, 2), 16);
+      sigs.push(out);
     }
   }
-  await tx.signWith(CONNECTED_KEY, async (bytes) =>
-    signForRole(CONNECTED_ROLE, HEDERA_DERIVATION_PATH, bytes),
-  );
+
+  // 3. Attach each signature to its corresponding signedTx's sigMap.
+  //    The protobuf shape is { sigMap: { sigPair: [{ pubKeyPrefix, ed25519 }] } }.
+  const pubKeyBytes = CONNECTED_KEY.toBytes();
+  for (let i = 0; i < list.length; i++) {
+    const st = list[i];
+    if (!st.sigMap) st.sigMap = { sigPair: [] };
+    if (!st.sigMap.sigPair) st.sigMap.sigPair = [];
+    st.sigMap.sigPair.push({
+      pubKeyPrefix: pubKeyBytes,
+      ed25519: sigs[i],
+    });
+  }
+  console.log("[WC] attached", sigs.length, "signatures");
   return tx;
 }
 
