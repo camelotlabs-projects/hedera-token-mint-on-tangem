@@ -228,23 +228,23 @@ export function ConnectScreen({ appendLog }: Props) {
           disabled={busy || emissionScanned}
           loading={busy && !emissionScanned}
         />
-        {emissionScanned && (
-          <>
-            <View style={{ height: spacing.sm }} />
-            <GhostButton
-              label="Verify sign (debug)"
-              onPress={onVerifyEmissionSign}
-              disabled={busy}
-            />
-            <View style={{ height: spacing.sm }} />
-            <GhostButton
-              label="List all wallets on card (debug)"
-              onPress={onListWallets}
-              disabled={busy}
-            />
-          </>
-        )}
       </Section>
+
+      {emissionScanned && (
+        <Section title="Diagnostics" subtitle="Run if pairing or signing misbehaves">
+          <GhostButton
+            label="Verify sign (debug)"
+            onPress={onVerifyEmissionSign}
+            disabled={busy}
+          />
+          <View style={{ height: spacing.sm }} />
+          <GhostButton
+            label="List all wallets on card (debug)"
+            onPress={onListWallets}
+            disabled={busy}
+          />
+        </Section>
+      )}
 
       <Section
         step={4}
