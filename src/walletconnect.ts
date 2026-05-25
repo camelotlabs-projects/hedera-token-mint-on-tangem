@@ -269,14 +269,23 @@ async function tangemSignTx(tx: Transaction): Promise<Transaction> {
   const sig = new Uint8Array(clean.length / 2);
   for (let j = 0; j < sig.length; j++) sig[j] = parseInt(clean.substr(j * 2, 2), 16);
 
-  // 3. Attach the signature to the surviving variant's sigMap.
-  if (!survivor.sigMap) survivor.sigMap = { sigPair: [] };
-  if (!survivor.sigMap.sigPair) survivor.sigMap.sigPair = [];
-  survivor.sigMap.sigPair.push({
-    pubKeyPrefix: CONNECTED_KEY.toBytes(),
-    ed25519: sig,
-  });
-  console.log("[WC] sig attached to variant 0");
+  // 3. Verify locally before we hand it off — Hedera will reject as
+  //    INVALID_SIGNATURE for both "wrong card" and "bad encoding", and
+  //    we can't tell those apart from a precheck error. Doing it here
+  //    surfaces the right diagnosis immediately.
+  const ok = CONNECTED_KEY.verify(bodyBytes, sig);
+  if (!ok) {
+    throw new Error(
+      `Tangem sig fails offline verification against ${CONNECTED_KEY.toStringRaw().slice(0, 16)}…. ` +
+        `Either the emission card's derived key doesn't match the on-chain key (wrong card or wrong derivation path), ` +
+        `or the SDK is hashing the body differently than Tangem did.`,
+    );
+  }
+  console.log("[WC] sig verified locally against connected key");
+
+  // 4. Attach via the SDK's official path (handles proto encoding for us).
+  (tx as any).addSignature(CONNECTED_KEY, sig);
+  console.log("[WC] sig attached via addSignature");
   return tx;
 }
 
